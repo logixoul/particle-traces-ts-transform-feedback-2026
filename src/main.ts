@@ -10,8 +10,8 @@ import {
 // Parameters (ported from ParticleLogic.js)
 // ---------------------------------------------------------------------------
 
-const PARTICLE_COUNT = 30_000;
-const TAIL_LENGTH = 10;      // history samples per particle, as in the reference
+const PARTICLE_COUNT = 3_000;
+const TAIL_LENGTH = 50;      // history samples per particle, as in the reference
 const TRAIL_POINTS = PARTICLE_COUNT * TAIL_LENGTH; // one sprite per sample
 const LIFESPAN = 100;        // frames
 const NOISE_SCALE = 6.3;      // spatial frequency of the curl field
@@ -20,10 +20,10 @@ const CURL_EPS = 0.01;        // central-difference step for the curl
 const PARTICLE_SIZE = 0.005;  // sprite diameter in world units
 
 // Post-processing, ported from the reference App.js.
-const EXPOSURE = 0.005;         // additive blending blows way past 1, so pull it back hard
-const BLOOM_STRENGTH = 3.2;
+const EXPOSURE = 0.5;         // additive blending blows way past 1, so pull it back hard
+const BLOOM_STRENGTH = 0.6;
 const BLOOM_RADIUS = 0.1;
-const BLOOM_THRESHOLD = 1.0;  // only genuinely dense clumps glow
+const BLOOM_THRESHOLD = 0.0;  // only genuinely dense clumps glow
 
 /** JS number -> WGSL f32 literal (`1` is an integer literal in WGSL, `1.0` is not). */
 const f32 = (n: number) => (Number.isInteger(n) ? `${n}.0` : `${n}`);
@@ -73,7 +73,7 @@ fn valueNoise( p: vec3f ) -> f32 {
  */
 const curlNoise = wgsl(`
 fn curlNoise( p: vec3f ) -> vec3f {
-	//return vec3f(valueNoise(p), valueNoise(p.yzx + vec3f(100.0)), valueNoise(p.zxy + vec3f(200.0))); // Placeholder for actual curl noise computation
+	return vec3f(valueNoise(p), valueNoise(p.yzx + vec3f(100.0)), valueNoise(p.zxy + vec3f(200.0))); // Placeholder for actual curl noise computation
 	let e = ${f32(CURL_EPS)};
 	let k = 1.0 / ( 2.0 * e );
 
@@ -221,7 +221,7 @@ const sampleSlot = instanceIndex.mod(uint(TAIL_LENGTH));
 const sampleAge = trailSlot.add(uint(TAIL_LENGTH)).sub(sampleSlot).mod(uint(TAIL_LENGTH));
 // varying() forces this into the vertex stage: instanceIndex is a vertex-only
 // builtin, so the fragment shader cannot read it directly.
-const trailFade = varying(sampleAge.toFloat().div(TAIL_LENGTH).oneMinus());
+const trailFade = varying(sampleAge.toFloat().div(TAIL_LENGTH).oneMinus()).pow2();
 
 const material = new THREE.SpriteNodeMaterial({
 	transparent: true,
