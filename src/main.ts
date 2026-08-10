@@ -10,18 +10,18 @@ import {
 // Parameters (ported from ParticleLogic.js)
 // ---------------------------------------------------------------------------
 
-const PARTICLE_COUNT = 1_000_000;
+const PARTICLE_COUNT = 1_000_00;
 const LIFESPAN = 1000;        // frames
 const NOISE_SCALE = 10.3;      // spatial frequency of the curl field
 const SPEED = 0.01;           // world units per frame
 const CURL_EPS = 0.01;        // central-difference step for the curl
-const PARTICLE_SIZE = 0.006;  // sprite diameter in world units
+const PARTICLE_SIZE = 0.018;  // sprite diameter in world units
 
 // Post-processing, ported from the reference App.js.
 const EXPOSURE = 0.1;         // additive blending blows way past 1, so pull it back hard
-const BLOOM_STRENGTH = 0.2;
-const BLOOM_RADIUS = 0.04;
-const BLOOM_THRESHOLD = 3.0;  // only genuinely dense clumps glow
+const BLOOM_STRENGTH = 1.2;
+const BLOOM_RADIUS = 0.1;
+const BLOOM_THRESHOLD = 0.0;  // only genuinely dense clumps glow
 
 /** JS number -> WGSL f32 literal (`1` is an integer literal in WGSL, `1.0` is not). */
 const f32 = (n: number) => (Number.isInteger(n) ? `${n}.0` : `${n}`);
