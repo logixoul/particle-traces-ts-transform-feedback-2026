@@ -165,7 +165,10 @@ const material = new THREE.SpriteNodeMaterial({
 	blending: THREE.AdditiveBlending,
 });
 material.positionNode = positionBuffer.toAttribute();
-material.colorNode = colorBuffer.toAttribute();
+// .xyz matters: storage buffers of vec3 are padded to 4 floats on the GPU, so the
+// attribute arrives as a vec4 whose w is the never-written padding. Assigning the
+// whole vec4 to colorNode would set the material's alpha to 0 and draw nothing.
+material.colorNode = colorBuffer.toAttribute().xyz;
 material.opacityNode = disc;
 // sizeAttenuation stays on, so the on-screen radius is proportional to
 // PARTICLE_SIZE / -z_view -- i.e. it falls off with camera-space depth.
