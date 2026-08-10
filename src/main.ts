@@ -15,13 +15,13 @@ const LIFESPAN = 100;        // frames
 const NOISE_SCALE = 6.3;      // spatial frequency of the curl field
 const SPEED = 0.01;           // world units per frame
 const CURL_EPS = 0.01;        // central-difference step for the curl
-const PARTICLE_SIZE = 0.018;  // sprite diameter in world units
+const PARTICLE_SIZE = 0.01;  // sprite diameter in world units
 
 // Post-processing, ported from the reference App.js.
 const EXPOSURE = 0.1;         // additive blending blows way past 1, so pull it back hard
-const BLOOM_STRENGTH = 2.2;
+const BLOOM_STRENGTH = 1.2;
 const BLOOM_RADIUS = 0.1;
-const BLOOM_THRESHOLD = 0.0;  // only genuinely dense clumps glow
+const BLOOM_THRESHOLD = 1.0;  // only genuinely dense clumps glow
 
 /** JS number -> WGSL f32 literal (`1` is an integer literal in WGSL, `1.0` is not). */
 const f32 = (n: number) => (Number.isInteger(n) ? `${n}.0` : `${n}`);
@@ -71,6 +71,7 @@ fn valueNoise( p: vec3f ) -> f32 {
  */
 const curlNoise = wgsl(`
 fn curlNoise( p: vec3f ) -> vec3f {
+	return vec3f(valueNoise(p), valueNoise(p.yzx + vec3f(100.0)), valueNoise(p.zxy + vec3f(200.0))); // Placeholder for actual curl noise computation
 	let e = ${f32(CURL_EPS)};
 	let k = 1.0 / ( 2.0 * e );
 
