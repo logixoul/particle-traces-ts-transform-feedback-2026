@@ -2,7 +2,7 @@ import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import {
-	Fn, If, vec3, float, uint, uv, uniform, instancedArray, instanceIndex,
+	Fn, If, Loop, float, uint, uv, uniform, instancedArray, instanceIndex,
 	atan, smoothstep, fwidth, wgslFn, pass,
 } from 'three/tsl';
 
@@ -10,7 +10,9 @@ import {
 // Parameters (ported from ParticleLogic.js)
 // ---------------------------------------------------------------------------
 
-const PARTICLE_COUNT = 1_000_00;
+const PARTICLE_COUNT = 10_000;
+const TAIL_LENGTH = 100;      // history samples per particle, as in the reference
+const TRAIL_POINTS = PARTICLE_COUNT * TAIL_LENGTH; // one sprite per sample
 const LIFESPAN = 100;        // frames
 const NOISE_SCALE = 6.3;      // spatial frequency of the curl field
 const SPEED = 0.01;           // world units per frame
@@ -121,40 +123,83 @@ fn spawn( seed: u32 ) -> vec4f {
 // GPU state: lives in storage buffers, never round-trips to the CPU
 // ---------------------------------------------------------------------------
 
+// Live simulation state: one entry per particle.
 const positionBuffer = instancedArray(PARTICLE_COUNT, 'vec3');
-const colorBuffer = instancedArray(PARTICLE_COUNT, 'vec3');
 const lifeBuffer = instancedArray(PARTICLE_COUNT, 'float');
 
+// The trails. Each particle owns TAIL_LENGTH consecutive slots used as a ring
+// buffer; every frame writes exactly one slot, so a trail costs one store per
+// particle no matter how long it is. This is also what gets drawn.
+const trailPositions = instancedArray(TRAIL_POINTS, 'vec3');
+const trailColors = instancedArray(TRAIL_POINTS, 'vec3');
+
 const frame = uniform(0, 'uint');
+const trailSlot = uniform(0, 'uint'); // ring slot written this frame
 
 /** Per-particle seed, decorrelated across frames. */
 const seedFor = () => instanceIndex.mul(uint(4)).add(frame.mul(uint(1000003)));
 
+/** Index of this particle's slot `n` in the trail buffers. */
+const trailIndex = (n: any) => instanceIndex.mul(uint(TAIL_LENGTH)).add(n);
+
+/** One step of the flow: advance `p`, and give back the colour for that step. */
+const step = (p: any) => {
+	const velocity = curlNoise({ p: p.mul(NOISE_SCALE) }).mul(SPEED).toVar();
+	p.addAssign(velocity);
+	// Colour by direction of travel, exactly as in the reference.
+	return hue2rgb({ h: atan(velocity.y, velocity.x).div(Math.PI).add(1).mul(0.5) });
+};
+
+/**
+ * Fill a whole trail in one go by running the flow forward TAIL_LENGTH times, and
+ * return where the particle ended up. Used on spawn and respawn: the reference does
+ * the same thing (reinit() calls update() TAIL_LENGTH times). Just parking every
+ * slot on the spawn point instead would stack TAIL_LENGTH sprites in one spot and
+ * speckle the scene with bright dots until each trail grew back out.
+ */
+const rollTrail = (position: any) => {
+	const p = position.toVar();
+
+	Loop({ type: 'uint', start: 0, end: TAIL_LENGTH }, ({ i }) => {
+		const color = step(p);
+
+		// Walk the ring forward from the head so the last step written is the newest
+		// sample, leaving the per-frame appends below in the right phase.
+		const slot = trailSlot.add(i).add(uint(1)).toVar();
+		If(slot.greaterThanEqual(uint(TAIL_LENGTH)), () => {
+			slot.subAssign(uint(TAIL_LENGTH));
+		});
+
+		trailPositions.element(trailIndex(slot)).assign(p);
+		trailColors.element(trailIndex(slot)).assign(color);
+	});
+
+	return p;
+};
+
 const computeInit = Fn(() => {
 	const fresh = spawn({ seed: seedFor() }).toVar();
-	positionBuffer.element(instanceIndex).assign(fresh.xyz);
 	lifeBuffer.element(instanceIndex).assign(fresh.w);
-	colorBuffer.element(instanceIndex).assign(vec3(1, 1, 1));
+	positionBuffer.element(instanceIndex).assign(rollTrail(fresh.xyz));
 })().compute(PARTICLE_COUNT);
 
 const computeUpdate = Fn(() => {
 	const position = positionBuffer.element(instanceIndex);
 	const life = lifeBuffer.element(instanceIndex);
 
-	const velocity = curlNoise({ p: position.mul(NOISE_SCALE) }).mul(SPEED).toVar();
-
-	// Colour by direction of travel, exactly as in the reference.
-	colorBuffer.element(instanceIndex).assign(
-		hue2rgb({ h: atan(velocity.y, velocity.x).div(Math.PI).add(1).mul(0.5) })
-	);
-
-	position.addAssign(velocity);
+	const p = position.toVar();
+	const color = step(p);
 	life.subAssign(1);
+
+	// Append the new head of the trail.
+	trailPositions.element(trailIndex(trailSlot)).assign(p);
+	trailColors.element(trailIndex(trailSlot)).assign(color);
+	position.assign(p);
 
 	If(life.lessThanEqual(0), () => {
 		const fresh = spawn({ seed: seedFor() }).toVar();
-		position.assign(fresh.xyz);
 		life.assign(fresh.w);
+		position.assign(rollTrail(fresh.xyz));
 	});
 })().compute(PARTICLE_COUNT);
 
@@ -172,18 +217,19 @@ const material = new THREE.SpriteNodeMaterial({
 	depthWrite: false,
 	blending: THREE.AdditiveBlending,
 });
-material.positionNode = positionBuffer.toAttribute();
+// One sprite per trail sample, so the trails need no rendering code of their own.
+material.positionNode = trailPositions.toAttribute();
 // .xyz matters: storage buffers of vec3 are padded to 4 floats on the GPU, so the
 // attribute arrives as a vec4 whose w is the never-written padding. Assigning the
 // whole vec4 to colorNode would set the material's alpha to 0 and draw nothing.
-material.colorNode = colorBuffer.toAttribute().xyz;
+material.colorNode = trailColors.toAttribute().xyz;
 material.opacityNode = disc;
 // sizeAttenuation stays on, so the on-screen radius is proportional to
 // PARTICLE_SIZE / -z_view -- i.e. it falls off with camera-space depth.
 material.scaleNode = uniform(PARTICLE_SIZE);
 
 const particles = new THREE.Sprite(material);
-particles.count = PARTICLE_COUNT;
+particles.count = TRAIL_POINTS;
 particles.frustumCulled = false;
 
 // ---------------------------------------------------------------------------
@@ -240,6 +286,7 @@ async function main() {
 
 	renderer.setAnimationLoop(() => {
 		frame.value += 1;
+		trailSlot.value = (trailSlot.value + 1) % TAIL_LENGTH;
 		renderer.compute(computeUpdate);
 
 		controls.update();
@@ -248,7 +295,8 @@ async function main() {
 		const now = performance.now();
 		fps += (1000 / (now - last) - fps) * 0.05;
 		last = now;
-		info.textContent = `${PARTICLE_COUNT.toLocaleString()} particles   ${fps.toFixed(0)} fps`;
+		info.textContent = `${PARTICLE_COUNT.toLocaleString()} particles`
+			+ ` x ${TAIL_LENGTH} trail   ${fps.toFixed(0)} fps`;
 	});
 }
 
