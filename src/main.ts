@@ -1,8 +1,8 @@
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
-	Fn, If, vec3, vec4, float, uint, uv, uniform, instancedArray, instanceIndex, hash,
-	floor, fract, mix, mod, dot, sin, abs, saturate, atan, smoothstep, fwidth,
+	Fn, If, vec3, float, uint, uv, uniform, instancedArray, instanceIndex,
+	atan, smoothstep, fwidth, wgslFn,
 } from 'three/tsl';
 
 // ---------------------------------------------------------------------------
@@ -16,78 +16,98 @@ const SPEED = 0.01;           // world units per frame
 const CURL_EPS = 0.01;        // central-difference step for the curl
 const PARTICLE_SIZE = 0.006;  // sprite diameter in world units
 
+/** JS number -> WGSL f32 literal (`1` is an integer literal in WGSL, `1.0` is not). */
+const f32 = (n: number) => (Number.isInteger(n) ? `${n}.0` : `${n}`);
+
+/** wgslFn() is typed as returning a bare Node, which blocks method chaining. */
+const wgsl = (code: string, includes: any[] = []) =>
+	wgslFn(code, includes) as unknown as (args: Record<string, any>) => any;
+
 // ---------------------------------------------------------------------------
-// Hash-based value noise (replaces simplex noise)
+// Shader math, in plain WGSL. Each helper is a normal WGSL function; the second
+// argument to wgsl() lists the functions it calls so they get emitted too.
 // ---------------------------------------------------------------------------
 
 /** Lattice hash: vec3 -> [0,1) */
-const hash31 = Fn(([p]: [any]) => {
-	return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))).mul(43758.5453123));
-});
-hash31.setLayout({ name: 'hash31', type: 'float', inputs: [{ name: 'p', type: 'vec3' }] });
+const hash31 = wgsl(`
+fn hash31( p: vec3f ) -> f32 {
+	return fract( sin( dot( p, vec3f( 127.1, 311.7, 74.7 ) ) ) * 43758.5453123 );
+}`);
 
-/** Trilinearly interpolated value noise, in [-1,1]. */
-const valueNoise = Fn(([p]: [any]) => {
-	const i = floor(p);
-	const f = fract(p);
-	const u = f.mul(f).mul(float(3).sub(f.mul(2))); // smoothstep weights
+/** Trilinearly interpolated value noise, in [-1,1]. Replaces the simplex noise. */
+const valueNoise = wgsl(`
+fn valueNoise( p: vec3f ) -> f32 {
+	let i = floor( p );
+	let f = fract( p );
+	let u = f * f * ( 3.0 - 2.0 * f );
 
-	const n000 = hash31(i.add(vec3(0, 0, 0)));
-	const n100 = hash31(i.add(vec3(1, 0, 0)));
-	const n010 = hash31(i.add(vec3(0, 1, 0)));
-	const n110 = hash31(i.add(vec3(1, 1, 0)));
-	const n001 = hash31(i.add(vec3(0, 0, 1)));
-	const n101 = hash31(i.add(vec3(1, 0, 1)));
-	const n011 = hash31(i.add(vec3(0, 1, 1)));
-	const n111 = hash31(i.add(vec3(1, 1, 1)));
+	let n000 = hash31( i );
+	let n100 = hash31( i + vec3f( 1, 0, 0 ) );
+	let n010 = hash31( i + vec3f( 0, 1, 0 ) );
+	let n110 = hash31( i + vec3f( 1, 1, 0 ) );
+	let n001 = hash31( i + vec3f( 0, 0, 1 ) );
+	let n101 = hash31( i + vec3f( 1, 0, 1 ) );
+	let n011 = hash31( i + vec3f( 0, 1, 1 ) );
+	let n111 = hash31( i + vec3f( 1, 1, 1 ) );
 
-	const nx00 = mix(n000, n100, u.x);
-	const nx10 = mix(n010, n110, u.x);
-	const nx01 = mix(n001, n101, u.x);
-	const nx11 = mix(n011, n111, u.x);
+	let n00 = mix( n000, n100, u.x );
+	let n10 = mix( n010, n110, u.x );
+	let n01 = mix( n001, n101, u.x );
+	let n11 = mix( n011, n111, u.x );
 
-	const nxy0 = mix(nx00, nx10, u.y);
-	const nxy1 = mix(nx01, nx11, u.y);
-
-	return mix(nxy0, nxy1, u.z).mul(2).sub(1);
-});
-valueNoise.setLayout({ name: 'valueNoise', type: 'float', inputs: [{ name: 'p', type: 'vec3' }] });
+	return 2.0 * mix( mix( n00, n10, u.y ), mix( n01, n11, u.y ), u.z ) - 1.0;
+}`, [hash31]);
 
 /**
  * Curl of the vector field F(p) = ( N(p), N(p.yzx + 100), N(p.zxy + 200) ),
  * by central differences -- same construction as the reference implementation.
  */
-const curlNoise = Fn(([p]: [any]) => {
-	const e = float(CURL_EPS);
-	const inv2e = float(1 / (2 * CURL_EPS));
+const curlNoise = wgsl(`
+fn curlNoise( p: vec3f ) -> vec3f {
+	let e = ${f32(CURL_EPS)};
+	let k = 1.0 / ( 2.0 * e );
 
-	const x = p.x, y = p.y, z = p.z;
+	let x = p.x;
+	let y = p.y;
+	let z = p.z;
 
-	const dFz_dy = valueNoise(vec3(z.add(200), x.add(200), y.add(200).add(e)))
-		.sub(valueNoise(vec3(z.add(200), x.add(200), y.add(200).sub(e)))).mul(inv2e);
-	const dFy_dz = valueNoise(vec3(y.add(100), z.add(100).add(e), x.add(100)))
-		.sub(valueNoise(vec3(y.add(100), z.add(100).sub(e), x.add(100)))).mul(inv2e);
+	let dFz_dy = ( valueNoise( vec3f( z + 200, x + 200, y + 200 + e ) ) - valueNoise( vec3f( z + 200, x + 200, y + 200 - e ) ) ) * k;
+	let dFy_dz = ( valueNoise( vec3f( y + 100, z + 100 + e, x + 100 ) ) - valueNoise( vec3f( y + 100, z + 100 - e, x + 100 ) ) ) * k;
 
-	const dFx_dz = valueNoise(vec3(x, y, z.add(e)))
-		.sub(valueNoise(vec3(x, y, z.sub(e)))).mul(inv2e);
-	const dFz_dx = valueNoise(vec3(z.add(200).add(e), x.add(200), y.add(200)))
-		.sub(valueNoise(vec3(z.add(200).sub(e), x.add(200), y.add(200)))).mul(inv2e);
+	let dFx_dz = ( valueNoise( vec3f( x, y, z + e ) ) - valueNoise( vec3f( x, y, z - e ) ) ) * k;
+	let dFz_dx = ( valueNoise( vec3f( z + 200 + e, x + 200, y + 200 ) ) - valueNoise( vec3f( z + 200 - e, x + 200, y + 200 ) ) ) * k;
 
-	const dFy_dx = valueNoise(vec3(y.add(100).add(e), z.add(100), x.add(100)))
-		.sub(valueNoise(vec3(y.add(100).sub(e), z.add(100), x.add(100)))).mul(inv2e);
-	const dFx_dy = valueNoise(vec3(x, y.add(e), z))
-		.sub(valueNoise(vec3(x, y.sub(e), z))).mul(inv2e);
+	let dFy_dx = ( valueNoise( vec3f( y + 100 + e, z + 100, x + 100 ) ) - valueNoise( vec3f( y + 100 - e, z + 100, x + 100 ) ) ) * k;
+	let dFx_dy = ( valueNoise( vec3f( x, y + e, z ) ) - valueNoise( vec3f( x, y - e, z ) ) ) * k;
 
-	return vec3(dFz_dy.sub(dFy_dz), dFx_dz.sub(dFz_dx), dFy_dx.sub(dFx_dy));
-});
-curlNoise.setLayout({ name: 'curlNoise', type: 'vec3', inputs: [{ name: 'p', type: 'vec3' }] });
+	return vec3f( dFz_dy - dFy_dz, dFx_dz - dFz_dx, dFy_dx - dFx_dy );
+}`, [valueNoise]);
 
 /** Fully saturated hue -> RGB (equivalent to HSL with s = 1, l = 0.5). */
-const hue2rgb = Fn(([h]: [any]) => {
-	const k = mod(h.mul(6).add(vec3(0, 4, 2)), 6);
-	return saturate(abs(k.sub(3)).sub(1));
-});
-hue2rgb.setLayout({ name: 'hue2rgb', type: 'vec3', inputs: [{ name: 'h', type: 'float' }] });
+const hue2rgb = wgsl(`
+fn hue2rgb( h: f32 ) -> vec3f {
+	let k = ( h * 6.0 + vec3f( 0, 4, 2 ) ) % 6.0;
+	return saturate( abs( k - 3.0 ) - 1.0 );
+}`);
+
+/** PCG hash: u32 -> [0,1) */
+const pcg = wgsl(`
+fn pcg( seed: u32 ) -> f32 {
+	let state = seed * 747796405u + 2891336453u;
+	let word = ( ( state >> ( ( state >> 28u ) + 4u ) ) ^ state ) * 277803737u;
+	return f32( ( word >> 22u ) ^ word ) / 4294967296.0;
+}`);
+
+/** A fresh particle: xyz is a point in the unit cube at the origin, w is a lifetime. */
+const spawn = wgsl(`
+fn spawn( seed: u32 ) -> vec4f {
+	return vec4f(
+		pcg( seed ) - 0.5,
+		pcg( seed + 1u ) - 0.5,
+		pcg( seed + 2u ) - 0.5,
+		pcg( seed + 3u ) * ${f32(LIFESPAN)}
+	);
+}`, [pcg]);
 
 // ---------------------------------------------------------------------------
 // GPU state: lives in storage buffers, never round-trips to the CPU
@@ -99,26 +119,11 @@ const lifeBuffer = instancedArray(PARTICLE_COUNT, 'float');
 
 const frame = uniform(0, 'uint');
 
-/**
- * A fresh particle: xyz is a random point in the unit cube centred on the origin,
- * w is a random lifetime. Returning the state (rather than writing the buffers from
- * inside here) matters -- TSL only emits nodes whose result is used somewhere.
- */
-const spawn = Fn(([seed]: [any]) => {
-	return vec4(
-		hash(seed).sub(0.5),
-		hash(seed.add(uint(1))).sub(0.5),
-		hash(seed.add(uint(2))).sub(0.5),
-		hash(seed.add(uint(3))).mul(LIFESPAN),
-	);
-});
-spawn.setLayout({ name: 'spawn', type: 'vec4', inputs: [{ name: 'seed', type: 'uint' }] });
-
 /** Per-particle seed, decorrelated across frames. */
 const seedFor = () => instanceIndex.mul(uint(4)).add(frame.mul(uint(1000003)));
 
 const computeInit = Fn(() => {
-	const fresh = spawn(seedFor());
+	const fresh = spawn({ seed: seedFor() }).toVar();
 	positionBuffer.element(instanceIndex).assign(fresh.xyz);
 	lifeBuffer.element(instanceIndex).assign(fresh.w);
 	colorBuffer.element(instanceIndex).assign(vec3(1, 1, 1));
@@ -128,18 +133,18 @@ const computeUpdate = Fn(() => {
 	const position = positionBuffer.element(instanceIndex);
 	const life = lifeBuffer.element(instanceIndex);
 
-	const velocity = curlNoise(position.mul(NOISE_SCALE)).mul(SPEED).toVar();
+	const velocity = curlNoise({ p: position.mul(NOISE_SCALE) }).mul(SPEED).toVar();
 
 	// Colour by direction of travel, exactly as in the reference.
 	colorBuffer.element(instanceIndex).assign(
-		hue2rgb(atan(velocity.y, velocity.x).div(Math.PI).add(1).mul(0.5))
+		hue2rgb({ h: atan(velocity.y, velocity.x).div(Math.PI).add(1).mul(0.5) })
 	);
 
 	position.addAssign(velocity);
 	life.subAssign(1);
 
 	If(life.lessThanEqual(0), () => {
-		const fresh = spawn(seedFor());
+		const fresh = spawn({ seed: seedFor() }).toVar();
 		position.assign(fresh.xyz);
 		life.assign(fresh.w);
 	});
@@ -198,6 +203,13 @@ const info = document.getElementById('info')!;
 
 async function main() {
 	await renderer.init();
+
+	// The shaders are WGSL, so there is no WebGL2 fallback -- say so plainly
+	// rather than letting the GLSL backend fail on WGSL it cannot parse.
+	if (!(renderer.backend as any).isWebGPUBackend) {
+		throw new Error('this demo needs WebGPU (Chrome/Edge 113+); no adapter was available');
+	}
+
 	await renderer.computeAsync(computeInit);
 
 	let last = performance.now();
@@ -218,6 +230,6 @@ async function main() {
 }
 
 main().catch((err) => {
-	info.textContent = `WebGPU unavailable:\n${err}`;
+	info.textContent = `Could not start:\n${err}`;
 	console.error(err);
 });
