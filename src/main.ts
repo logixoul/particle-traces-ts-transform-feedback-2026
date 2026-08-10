@@ -1,8 +1,9 @@
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import {
 	Fn, If, vec3, float, uint, uv, uniform, instancedArray, instanceIndex,
-	atan, smoothstep, fwidth, wgslFn,
+	atan, smoothstep, fwidth, wgslFn, pass,
 } from 'three/tsl';
 
 // ---------------------------------------------------------------------------
@@ -15,6 +16,12 @@ const NOISE_SCALE = 10.3;      // spatial frequency of the curl field
 const SPEED = 0.01;           // world units per frame
 const CURL_EPS = 0.01;        // central-difference step for the curl
 const PARTICLE_SIZE = 0.006;  // sprite diameter in world units
+
+// Post-processing, ported from the reference App.js.
+const EXPOSURE = 0.1;         // additive blending blows way past 1, so pull it back hard
+const BLOOM_STRENGTH = 0.2;
+const BLOOM_RADIUS = 0.04;
+const BLOOM_THRESHOLD = 3.0;  // only genuinely dense clumps glow
 
 /** JS number -> WGSL f32 literal (`1` is an integer literal in WGSL, `1.0` is not). */
 const f32 = (n: number) => (Number.isInteger(n) ? `${n}.0` : `${n}`);
@@ -191,7 +198,18 @@ camera.position.set(0, 0, 2);
 const renderer = new THREE.WebGPURenderer({ antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = EXPOSURE;
 document.body.appendChild(renderer.domElement);
+
+// Bloom over the HDR scene pass. RenderPipeline applies tone mapping and the sRGB
+// conversion to outputNode itself, so this is the same order as RenderPass ->
+// UnrealBloomPass -> OutputPass in the reference. The pass resizes with the canvas.
+const scenePass = pass(scene, camera).getTextureNode();
+const postProcessing = new THREE.RenderPipeline(renderer);
+postProcessing.outputNode = scenePass.add(
+	bloom(scenePass, BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD),
+);
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -223,7 +241,7 @@ async function main() {
 		renderer.compute(computeUpdate);
 
 		controls.update();
-		renderer.render(scene, camera);
+		postProcessing.render();
 
 		const now = performance.now();
 		fps += (1000 / (now - last) - fps) * 0.05;
