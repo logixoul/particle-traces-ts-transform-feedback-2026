@@ -11,7 +11,7 @@ import {
 
 const PARTICLE_COUNT = 1_000_000;
 const LIFESPAN = 1000;        // frames
-const NOISE_SCALE = 0.3;      // spatial frequency of the curl field
+const NOISE_SCALE = 10.3;      // spatial frequency of the curl field
 const SPEED = 0.01;           // world units per frame
 const CURL_EPS = 0.01;        // central-difference step for the curl
 const PARTICLE_SIZE = 0.006;  // sprite diameter in world units
