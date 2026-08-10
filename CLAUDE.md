@@ -11,39 +11,40 @@ with no GPU-related flags *does* get a real WebGPU adapter on this machine. That
 enough to run the demo, screenshot it, read GPU buffers back, and dump the generated
 shaders — i.e. to debug a black screen without a round trip through the user.
 
-### Launching
+### The tool
 
-Playwright's Chromium is already on disk; do not download another one:
+`tools/cdp.mjs` does all of this. It reuses Playwright's already-installed Chromium
+(do not download another one) and needs no dependencies — Node 24 ships a WebSocket
+client, so it speaks raw CDP.
+
+Screenshot a page and dump its console:
 
 ```
-~/AppData/Local/ms-playwright/chromium-1208/chrome-win64/chrome.exe
+node tools/cdp.mjs http://localhost:5173/ shot.png
 ```
 
-Flags: `--headless=new --remote-debugging-port=<port> --user-data-dir=<fresh temp dir>
---no-first-run --no-sandbox`.
+Or use it as a library for anything more involved:
 
-**Do not add** `--use-angle=swiftshader`, `--use-vulkan=swiftshader`,
-`--enable-unsafe-swiftshader`, or `--use-webgpu-adapter=swiftshader`. Every one of
-those *removes* the WebGPU adapter (they are WebGL software-rendering switches).
-`--enable-unsafe-webgpu` is not needed either. Fewer flags works; more flags does not.
+```js
+import { withPage } from './tools/cdp.mjs';
 
-`navigator.gpu` only exists in a secure context, so probe on `http://localhost:<vite
-port>/`, never on `about:blank` — on `about:blank` it is `undefined` and looks like a
-capability problem when it is not.
+await withPage('http://localhost:5173/', async ({ evaluate, screenshot, logs }) => {
+	const shader = await evaluate(`(async () => {
+		const d = window.__dbg;
+		return (await d.renderer.debug.getShaderAsync(d.scene, d.camera, d.particles)).fragmentShader;
+	})()`);
+});
+```
 
-### Driving it
+Two things about it that are load-bearing and easy to "clean up" by mistake:
 
-Node 24 has a built-in `WebSocket`, so raw CDP needs **zero dependencies**:
-
-1. Poll `http://127.0.0.1:<port>/json/version` until it answers; take
-   `webSocketDebuggerUrl` and open it.
-2. `Target.createTarget {url:'about:blank'}` → `Target.attachToTarget {targetId,
-   flatten:true}` → use the returned `sessionId` on every later message.
-3. `Runtime.enable`, `Page.enable`, `Page.navigate {url}`, then wait a few seconds for
-   the animation loop to settle.
-4. `Runtime.evaluate {expression, awaitPromise:true, returnByValue:true}` to run
-   probes; `Page.captureScreenshot {format:'png'}` returns base64.
-5. Collect `Runtime.consoleAPICalled` and `Runtime.exceptionThrown` events for logs.
+- The flag list is short **on purpose**. `--use-angle=swiftshader`,
+  `--use-vulkan=swiftshader`, `--enable-unsafe-swiftshader` and
+  `--use-webgpu-adapter=swiftshader` each *remove* the WebGPU adapter — they are WebGL
+  software-rendering switches. `--enable-unsafe-webgpu` is not needed either.
+- `navigator.gpu` only exists in a secure context. Probe on `http://localhost:<vite
+  port>/`, never on `about:blank`, where it is `undefined` and looks like a capability
+  problem when it is not.
 
 ### The three probes worth knowing
 
