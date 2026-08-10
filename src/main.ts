@@ -3,25 +3,25 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import {
 	Fn, If, Loop, float, uint, uv, uniform, instancedArray, instanceIndex,
-	atan, smoothstep, fwidth, wgslFn, pass,
+	atan, smoothstep, fwidth, wgslFn, pass, varying,
 } from 'three/tsl';
 
 // ---------------------------------------------------------------------------
 // Parameters (ported from ParticleLogic.js)
 // ---------------------------------------------------------------------------
 
-const PARTICLE_COUNT = 10_000;
-const TAIL_LENGTH = 100;      // history samples per particle, as in the reference
+const PARTICLE_COUNT = 30_000;
+const TAIL_LENGTH = 10;      // history samples per particle, as in the reference
 const TRAIL_POINTS = PARTICLE_COUNT * TAIL_LENGTH; // one sprite per sample
 const LIFESPAN = 100;        // frames
 const NOISE_SCALE = 6.3;      // spatial frequency of the curl field
-const SPEED = 0.01;           // world units per frame
+const SPEED = 0.005;           // world units per frame
 const CURL_EPS = 0.01;        // central-difference step for the curl
-const PARTICLE_SIZE = 0.01;  // sprite diameter in world units
+const PARTICLE_SIZE = 0.005;  // sprite diameter in world units
 
 // Post-processing, ported from the reference App.js.
-const EXPOSURE = 0.1;         // additive blending blows way past 1, so pull it back hard
-const BLOOM_STRENGTH = 1.2;
+const EXPOSURE = 0.005;         // additive blending blows way past 1, so pull it back hard
+const BLOOM_STRENGTH = 3.2;
 const BLOOM_RADIUS = 0.1;
 const BLOOM_THRESHOLD = 1.0;  // only genuinely dense clumps glow
 
@@ -73,7 +73,7 @@ fn valueNoise( p: vec3f ) -> f32 {
  */
 const curlNoise = wgsl(`
 fn curlNoise( p: vec3f ) -> vec3f {
-	return vec3f(valueNoise(p), valueNoise(p.yzx + vec3f(100.0)), valueNoise(p.zxy + vec3f(200.0))); // Placeholder for actual curl noise computation
+	//return vec3f(valueNoise(p), valueNoise(p.yzx + vec3f(100.0)), valueNoise(p.zxy + vec3f(200.0))); // Placeholder for actual curl noise computation
 	let e = ${f32(CURL_EPS)};
 	let k = 1.0 / ( 2.0 * e );
 
@@ -212,6 +212,17 @@ const r = uv().sub(0.5).length().mul(2);
 // fwidth(r) is exactly one pixel expressed in r's units, so this is a 1px edge.
 const disc = smoothstep(float(1).sub(fwidth(r)), 1, r).oneMinus();
 
+// Trail fade. A sample's age is how far its ring slot sits behind the head, so it
+// has to be worked out here at draw time -- the stored colour is written once and
+// never revisited, so baking a fade into it would freeze each sample at whatever
+// brightness it had when written. Adding TAIL_LENGTH before subtracting keeps the
+// unsigned arithmetic from wrapping.
+const sampleSlot = instanceIndex.mod(uint(TAIL_LENGTH));
+const sampleAge = trailSlot.add(uint(TAIL_LENGTH)).sub(sampleSlot).mod(uint(TAIL_LENGTH));
+// varying() forces this into the vertex stage: instanceIndex is a vertex-only
+// builtin, so the fragment shader cannot read it directly.
+const trailFade = varying(sampleAge.toFloat().div(TAIL_LENGTH).oneMinus());
+
 const material = new THREE.SpriteNodeMaterial({
 	transparent: true,
 	depthWrite: false,
@@ -223,7 +234,7 @@ material.positionNode = trailPositions.toAttribute();
 // attribute arrives as a vec4 whose w is the never-written padding. Assigning the
 // whole vec4 to colorNode would set the material's alpha to 0 and draw nothing.
 material.colorNode = trailColors.toAttribute().xyz;
-material.opacityNode = disc;
+material.opacityNode = disc.mul(trailFade);
 // sizeAttenuation stays on, so the on-screen radius is proportional to
 // PARTICLE_SIZE / -z_view -- i.e. it falls off with camera-space depth.
 material.scaleNode = uniform(PARTICLE_SIZE);
@@ -245,9 +256,9 @@ camera.position.set(0, 0, 2);
 const renderer = new THREE.WebGPURenderer({ antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
-//renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMapping = THREE.LinearToneMapping;
-renderer.toneMappingExposure = EXPOSURE*.1;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+//renderer.toneMapping = THREE.LinearToneMapping;
+renderer.toneMappingExposure = EXPOSURE;
 document.body.appendChild(renderer.domElement);
 
 // Bloom over the HDR scene pass. RenderPipeline applies tone mapping and the sRGB
