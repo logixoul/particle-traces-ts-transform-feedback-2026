@@ -11,15 +11,15 @@ import {
 // ---------------------------------------------------------------------------
 
 const PARTICLE_COUNT = 1_000_00;
-const LIFESPAN = 1000;        // frames
-const NOISE_SCALE = 10.3;      // spatial frequency of the curl field
+const LIFESPAN = 100;        // frames
+const NOISE_SCALE = 6.3;      // spatial frequency of the curl field
 const SPEED = 0.01;           // world units per frame
 const CURL_EPS = 0.01;        // central-difference step for the curl
 const PARTICLE_SIZE = 0.018;  // sprite diameter in world units
 
 // Post-processing, ported from the reference App.js.
 const EXPOSURE = 0.1;         // additive blending blows way past 1, so pull it back hard
-const BLOOM_STRENGTH = 1.2;
+const BLOOM_STRENGTH = 2.2;
 const BLOOM_RADIUS = 0.1;
 const BLOOM_THRESHOLD = 0.0;  // only genuinely dense clumps glow
 
@@ -198,8 +198,9 @@ camera.position.set(0, 0, 2);
 const renderer = new THREE.WebGPURenderer({ antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = EXPOSURE;
+//renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMapping = THREE.LinearToneMapping;
+renderer.toneMappingExposure = EXPOSURE*.1;
 document.body.appendChild(renderer.domElement);
 
 // Bloom over the HDR scene pass. RenderPipeline applies tone mapping and the sRGB
