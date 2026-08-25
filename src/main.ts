@@ -2,15 +2,9 @@ import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import {
-	Fn, If, Loop, float, uint, uv, uniform, instancedArray, instanceIndex,
-	atan, smoothstep, fwidth, wgslFn, pass, varying, step,
-	vec3,
-	normalize,
-	cameraViewMatrix,
-	vec4,
-	positionViewDirection,
-	dot,
-	pow
+	Fn, If, Loop, float, uint, uniform, instancedArray, instanceIndex,
+	atan, wgslFn, pass, varying, vec3, normalize, dot, pow,
+	positionGeometry, positionWorld, cameraPosition
 } from 'three/tsl';
 
 // ---------------------------------------------------------------------------
@@ -18,13 +12,14 @@ import {
 // ---------------------------------------------------------------------------
 
 const PARTICLE_COUNT = 1_000;
-const TAIL_LENGTH = 200;      // history samples per particle, as in the reference
+const TAIL_LENGTH = 50;      // history samples per particle, as in the reference
 const TRAIL_POINTS = PARTICLE_COUNT * TAIL_LENGTH; // one sprite per sample
 const LIFESPAN = 100;        // frames
 const NOISE_SCALE = 6.3;      // spatial frequency of the curl field
-const SPEED = 0.0003;           // world units per frame
+const SPEED = 0.003;           // world units per frame
 const CURL_EPS = 0.01;        // central-difference step for the curl
-const PARTICLE_SIZE = 0.01;  // sprite diameter in world units
+const PARTICLE_SIZE = 0.01;  // tube diameter in world units
+const TUBE_SIDES = 6;         // radial segments per tube; 4 x this many triangles per trail sample
 
 const EXPOSURE = 1.0;
 const BLOOM_STRENGTH = 0.6;
@@ -210,56 +205,146 @@ const computeUpdate = Fn(() => {
 })().compute(PARTICLE_COUNT);
 
 // ---------------------------------------------------------------------------
-// Rendering: one instanced billboard per particle
+// Rendering: one instanced tube segment per trail sample
 // ---------------------------------------------------------------------------
 
-// Distance from the sprite centre, 0 at the centre and 1 at the disc edge.
-const r = uv().sub(0.5).length().mul(2);
-// fwidth(r) is exactly one pixel expressed in r's units, so this is a 1px edge.
-const disc = step(float(1), r).oneMinus();
+/**
+ * A unit vector perpendicular to `dir`, at the angle given by `cs` = (cos, sin).
+ *
+ * The (u, v) frame comes from Duff et al.'s branchless orthonormal basis, which
+ * matters for one specific reason: it is a pure function of `dir`. Two segments
+ * that share a direction therefore land their ring vertices in the same phase, so
+ * the tube stays continuous across a join instead of showing a twisted hexagon.
+ * (It does flip discontinuously for dir.z very near -1; a segment that lands there
+ * gets one skewed bevel band for one frame, which is not worth guarding against.)
+ */
+const ringOffset = wgsl(`
+fn ringOffset( dir: vec3f, cs: vec2f ) -> vec3f {
+	let s = select( -1.0, 1.0, dir.z >= 0.0 );
+	let a = -1.0 / ( s + dir.z );
+	let b = dir.x * dir.y * a;
+	let u = vec3f( 1.0 + s * dir.x * dir.x * a, s * b, -s * dir.x );
+	let v = vec3f( b, s + dir.y * dir.y * a, -dir.y );
+	return u * cs.x + v * cs.y;
+}`);
 
-const d  = uv().sub(0.5).mul(2);                 // [-1,1] across the sprite
-const normalZ = r.mul(r).oneMinus().max(0).sqrt();    // sqrt(1 - x² - y²)
-const N  = vec3(d.x, d.y, normalZ);
-const lightDirWorld = vec3(0.4, 0.8, 0.5);
-const L = normalize(cameraViewMatrix.mul(vec4(lightDirWorld, 0)).xyz);
-const V = positionViewDirection;
-const H = normalize(L.add(V));
-const diff = dot(N, L).max(0);
-const spec = pow(dot(N, H).max(0), 64).mul(1.0);
+/**
+ * The instance template: three rings of TUBE_SIDES vertices, skinned with two
+ * bands of quads. position.xy is (cos, sin) around the ring and position.z is the
+ * ring number -- packing it into the standard `position` attribute rather than
+ * custom ones keeps anything in three that expects a position attribute happy.
+ *
+ * Ring 0 and ring 1 sit on the same point but are perpendicular to different
+ * directions (the previous segment's and this one's), so band 0-1 is the bevel
+ * wedge that closes the join, and band 1-2 is the cylinder body.
+ */
+const buildSegmentGeometry = () => {
+	const position: number[] = [];
+	for (let ring = 0; ring < 3; ring++) {
+		for (let side = 0; side < TUBE_SIDES; side++) {
+			const angle = (side / TUBE_SIDES) * Math.PI * 2;
+			position.push(Math.cos(angle), Math.sin(angle), ring);
+		}
+	}
 
-// Trail fade. A sample's age is how far its ring slot sits behind the head, so it
-// has to be worked out here at draw time -- the stored colour is written once and
-// never revisited, so baking a fade into it would freeze each sample at whatever
-// brightness it had when written. Adding TAIL_LENGTH before subtracting keeps the
-// unsigned arithmetic from wrapping.
-const sampleSlot = instanceIndex.mod(uint(TAIL_LENGTH));
-const sampleAge = trailSlot.add(uint(TAIL_LENGTH)).sub(sampleSlot).mod(uint(TAIL_LENGTH));
-// varying() forces this into the vertex stage: instanceIndex is a vertex-only
-// builtin, so the fragment shader cannot read it directly.
-const trailFade = varying(sampleAge.toFloat().div(TAIL_LENGTH).oneMinus()).pow2();
+	// Wound counter-clockwise as seen from outside the tube, which is what the
+	// backface culling wants -- (u, v, dir) is right-handed, so the ring runs
+	// counter-clockwise around dir and the rings are ordered along +dir.
+	const index: number[] = [];
+	for (let ring = 0; ring < 2; ring++) {
+		for (let side = 0; side < TUBE_SIDES; side++) {
+			const next = (side + 1) % TUBE_SIDES;
+			const a = ring * TUBE_SIDES + side;
+			const b = ring * TUBE_SIDES + next;
+			const c = (ring + 1) * TUBE_SIDES + next;
+			const d = (ring + 1) * TUBE_SIDES + side;
+			index.push(a, b, c, a, c, d);
+		}
+	}
 
-const material = new THREE.SpriteNodeMaterial({
-	//transparent: true,
+	const geometry = new THREE.InstancedBufferGeometry();
+	geometry.setAttribute('position', new THREE.Float32BufferAttribute(position, 3));
+	geometry.setIndex(index);
+	geometry.instanceCount = TRAIL_POINTS;
+	return geometry;
+};
+
+// Instances are indexed by *age* rather than by raw ring slot: instance `age` of a
+// particle covers the segment between the sample `age + 1` frames old and the one
+// `age` frames old. That makes the fade a plain function of the instance index, and
+// it puts the ring buffer's seam at a known place (the oldest age) instead of
+// somewhere that moves every frame.
+const particleIndex = instanceIndex.div(uint(TAIL_LENGTH));
+const age = instanceIndex.mod(uint(TAIL_LENGTH));
+
+/** The trail buffer index of the sample `n` frames behind this particle's head. */
+const sampleIndex = (n: any) => particleIndex.mul(uint(TAIL_LENGTH))
+	// n reaches TAIL_LENGTH + 1 below, so two full turns of headroom keep the
+	// unsigned subtraction from wrapping.
+	.add(trailSlot.add(uint(2 * TAIL_LENGTH)).sub(n).mod(uint(TAIL_LENGTH)));
+
+const older = trailPositions.element(sampleIndex(age.add(uint(1))));
+const newer = trailPositions.element(sampleIndex(age));
+// The sample before `older`, i.e. where the previous segment came from. Only needed
+// for the bevel's first ring.
+const oldest = trailPositions.element(sampleIndex(age.add(uint(2))));
+
+const ring = positionGeometry.z;
+
+// One segment per particle spans the ring buffer's seam, joining the newest sample
+// to the oldest one across the whole scene. Collapse it to a point: every vertex
+// lands on `older`, so its triangles are zero-area and never rasterise.
+const isSeam = age.equal(uint(TAIL_LENGTH - 1));
+// The segment next to the seam has no previous sample to bevel against either, so
+// it just uses its own direction for both rings and comes out flat-ended.
+const hasPrevious = age.lessThan(uint(TAIL_LENGTH - 2));
+
+const direction = normalize(newer.sub(older));
+const previousDirection = hasPrevious.select(normalize(older.sub(oldest)), direction);
+
+// Rings 0 and 1 sit at the older end, ring 2 at the newer end; ring 0 is the only
+// one perpendicular to the previous segment, which is what makes the bevel.
+const center = isSeam.select(older, ring.lessThan(1.5).select(older, newer));
+const axis = ring.lessThan(0.5).select(previousDirection, direction);
+const radius = isSeam.select(float(0), float(PARTICLE_SIZE * 0.5));
+
+// A cylinder's normal is just the radial direction, so the ring offset does double
+// duty. varying() moves both this and the colour into the vertex stage, which they
+// need anyway: instanceIndex is a vertex-only builtin.
+const offset = ringOffset({ dir: axis, cs: positionGeometry.xy });
+// : any because varying() is typed as returning a bare Node, which blocks normalize().
+const surfaceNormal: any = varying(offset);
+
+// The colour is carried per ring so it interpolates along the segment instead of
+// stepping at every join.
+const olderColor = trailColors.element(sampleIndex(age.add(uint(1)))).xyz;
+const newerColor = trailColors.element(sampleIndex(age)).xyz;
+const emittance = varying(ring.lessThan(1.5).select(olderColor, newerColor));
+
+// Trail fade by age. Written once and never revisited, so it has to be applied at
+// draw time; with NoBlending it only ever reaches alphaTest, which trims the single
+// oldest sample. Move it onto `emittance` instead to make the tail actually darken.
+const trailFade = varying(age.toFloat().div(TAIL_LENGTH).oneMinus()).pow2();
+
+// Blinn-Phong with no ambient and no diffuse term: the stored colour is emitted
+// flat, and the only thing that reads as geometry is the specular highlight.
+const lightDirection = normalize(vec3(0.4, 0.8, 0.5));
+const viewDirection = normalize(cameraPosition.sub(positionWorld));
+const halfway = normalize(lightDirection.add(viewDirection));
+// Interpolating across the band shortens the normal, hence the renormalise.
+const specular = pow(dot(normalize(surfaceNormal), halfway).max(0), 64).mul(1.0);
+
+const material = new THREE.MeshBasicNodeMaterial({
 	depthWrite: true,
 	depthTest: true,
 	blending: THREE.NoBlending,
 	alphaTest: 0.001,
 });
-// One sprite per trail sample, so the trails need no rendering code of their own.
-material.positionNode = trailPositions.toAttribute();
-// .xyz matters: storage buffers of vec3 are padded to 4 floats on the GPU, so the
-// attribute arrives as a vec4 whose w is the never-written padding. Assigning the
-// whole vec4 to colorNode would set the material's alpha to 0 and draw nothing.
-const base = trailColors.toAttribute().xyz;
-material.colorNode = base.mul(0.5).add(diff.mul(0.5)).add(spec);
-material.opacityNode = disc.mul(trailFade);
-// sizeAttenuation stays on, so the on-screen radius is proportional to
-// PARTICLE_SIZE / -z_view -- i.e. it falls off with camera-space depth.
-material.scaleNode = uniform(PARTICLE_SIZE);
+material.positionNode = center.add(offset.mul(radius));
+material.colorNode = emittance.mul(0.5).add(specular);
+material.opacityNode = trailFade;
 
-const particles = new THREE.Sprite(material);
-particles.count = TRAIL_POINTS;
+const particles = new THREE.Mesh(buildSegmentGeometry(), material);
 particles.frustumCulled = false;
 
 // ---------------------------------------------------------------------------
