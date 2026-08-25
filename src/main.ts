@@ -18,19 +18,18 @@ import {
 // ---------------------------------------------------------------------------
 
 const PARTICLE_COUNT = 1_000;
-const TAIL_LENGTH = 100;      // history samples per particle, as in the reference
+const TAIL_LENGTH = 200;      // history samples per particle, as in the reference
 const TRAIL_POINTS = PARTICLE_COUNT * TAIL_LENGTH; // one sprite per sample
 const LIFESPAN = 100;        // frames
 const NOISE_SCALE = 6.3;      // spatial frequency of the curl field
-const SPEED = 0.001;           // world units per frame
+const SPEED = 0.0003;           // world units per frame
 const CURL_EPS = 0.01;        // central-difference step for the curl
-const PARTICLE_SIZE = 0.02;  // sprite diameter in world units
+const PARTICLE_SIZE = 0.01;  // sprite diameter in world units
 
-// Post-processing, ported from the reference App.js.
-const EXPOSURE = 1.5;         // additive blending blows way past 1, so pull it back hard
+const EXPOSURE = 1.0;
 const BLOOM_STRENGTH = 0.6;
 const BLOOM_RADIUS = 0.0003;
-const BLOOM_THRESHOLD = 0.1;  // only genuinely dense clumps glow
+const BLOOM_THRESHOLD = 0.1;
 
 /** JS number -> WGSL f32 literal (`1` is an integer literal in WGSL, `1.0` is not). */
 const f32 = (n: number) => (Number.isInteger(n) ? `${n}.0` : `${n}`);
@@ -154,7 +153,7 @@ const doStep = (p: any) => {
 	const velocity = curlNoise({ p: p.mul(NOISE_SCALE) }).mul(SPEED).toVar();
 	p.addAssign(velocity);
 	// Colour by direction of travel, exactly as in the reference.
-	return hue2rgb({ h: atan(velocity.y, velocity.x).div(Math.PI).add(1).mul(0.5) }).add(0.01);
+	return hue2rgb({ h: atan(velocity.y, velocity.x).div(Math.PI).add(1).mul(0.5) });
 };
 
 /**
@@ -227,7 +226,7 @@ const L = normalize(cameraViewMatrix.mul(vec4(lightDirWorld, 0)).xyz);
 const V = positionViewDirection;
 const H = normalize(L.add(V));
 const diff = dot(N, L).max(0);
-const spec = pow(dot(N, H).max(0), 40).mul(2.0);
+const spec = pow(dot(N, H).max(0), 64).mul(1.0);
 
 // Trail fade. A sample's age is how far its ring slot sits behind the head, so it
 // has to be worked out here at draw time -- the stored colour is written once and
@@ -270,15 +269,15 @@ particles.frustumCulled = false;
 const scene = new THREE.Scene();
 scene.add(particles);
 
-const camera = new THREE.PerspectiveCamera(90, window.innerWidth / window.innerHeight, 0.01, 100);
-camera.position.set(0, 0, 2);
+const camera = new THREE.PerspectiveCamera(120, window.innerWidth / window.innerHeight, 0.01, 100);
+camera.position.set(0, 0, 0.3);
 
 const renderer = new THREE.WebGPURenderer({ antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
-//renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
 //renderer.toneMapping = THREE.LinearToneMapping;
-renderer.toneMapping = THREE.AgXToneMapping;
+//renderer.toneMapping = THREE.AgXToneMapping;
 renderer.toneMappingExposure = EXPOSURE;
 document.body.appendChild(renderer.domElement);
 
