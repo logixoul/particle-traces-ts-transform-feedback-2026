@@ -392,9 +392,9 @@ const specularStepped = specular.greaterThan(0.5).select(float(1), float(0)).mul
 //const diffuse =
 
 const material = new THREE.MeshBasicNodeMaterial({
-	depthWrite: true,
-	depthTest: true,
-	//blending: THREE.AdditiveBlending,
+	//depthWrite: true,
+	//depthTest: true,
+	blending: THREE.AdditiveBlending,
 	//alphaTest: 0.001,
 });
 material.positionNode = center.add(offset.mul(radius));
