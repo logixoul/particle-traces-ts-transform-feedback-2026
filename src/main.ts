@@ -19,10 +19,11 @@ const NOISE_SCALE = 6.3;      // spatial frequency of the curl field
 const SPEED = 0.003;           // world units per frame
 const CURL_EPS = 0.01;        // central-difference step for the curl
 const PARTICLE_SIZE = 0.01;  // tube diameter in world units
-const AXIAL_MAX = 40;          // cap on the look-down-the-barrel emittance flare
+const SPECULAR_F0 = 0.04;     // reflectance head-on; the Fresnel term rises to 1 at grazing
+const AXIAL_MAX = 400;          // cap on the look-down-the-barrel emittance flare
 const TUBE_SIDES = 6;         // radial segments per tube; 4 x this many triangles per trail sample
 
-const EXPOSURE = 0.1;
+const EXPOSURE = 0.6;
 const BLOOM_STRENGTH = 0.6;
 const BLOOM_RADIUS = 0.0003;
 const BLOOM_THRESHOLD = 0.1;
@@ -149,7 +150,7 @@ const doStep = (p: any) => {
 	const velocity = curlNoise({ p: p.mul(NOISE_SCALE) }).mul(SPEED).toVar();
 	p.addAssign(velocity);
 	// Colour by direction of travel, exactly as in the reference.
-	return hue2rgb({ h: atan(velocity.y, velocity.x).div(Math.PI).add(1).mul(0.5) }).add(.1);
+	return hue2rgb({ h: atan(velocity.y, velocity.x).div(Math.PI).add(1).mul(0.5) }).add(.01);
 };
 
 /**
@@ -356,12 +357,21 @@ const alongAxis = dot(normalize(tubeAxis), viewDirection);
 const axial = inverseSqrt(alongAxis.mul(alongAxis).oneMinus().max(1 / (AXIAL_MAX * AXIAL_MAX)));
 
 const specular = pow(dot(normalize(surfaceNormal), halfway).max(0), 8);
-const specularStepped = specular.greaterThan(0.5).select(float(1), float(0)).mul(2);
+// Schlick's approximation, on dot(H, V) -- the angle to the microfacet that is
+// actually doing the reflecting, not to the surface, which is what keeps the rim of
+// a tube lighting up rather than the whole silhouette. Applied after the step, so it
+// varies the highlight's brightness and leaves its hard edge where it is; move it
+// inside the greaterThan() instead and it would grow the highlight at grazing angles.
+const fresnel = dot(halfway, viewDirection).max(0).oneMinus().pow(5)
+	.mul(1 - SPECULAR_F0).add(SPECULAR_F0);
+const specularStepped = specular.greaterThan(0.5).select(float(1), float(0)).mul(10).mul(fresnel);
+
+const diffuse = 
 
 const material = new THREE.MeshBasicNodeMaterial({
-	depthWrite: false,
-	depthTest: false,
-	blending: THREE.AdditiveBlending,
+	depthWrite: true,
+	depthTest: true,
+	//blending: THREE.AdditiveBlending,
 	//alphaTest: 0.001,
 });
 material.positionNode = center.add(offset.mul(radius));
