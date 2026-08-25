@@ -14,14 +14,14 @@ import {
 const PARTICLE_COUNT = 1_000;
 const TAIL_LENGTH = 50;      // history samples per particle, as in the reference
 const TRAIL_POINTS = PARTICLE_COUNT * TAIL_LENGTH; // one sprite per sample
-const LIFESPAN = 100;        // frames
+const LIFESPAN = 1000;        // frames
 const NOISE_SCALE = 6.3;      // spatial frequency of the curl field
 const SPEED = 0.003;           // world units per frame
 const CURL_EPS = 0.01;        // central-difference step for the curl
 const PARTICLE_SIZE = 0.01;  // tube diameter in world units
 const TUBE_SIDES = 6;         // radial segments per tube; 4 x this many triangles per trail sample
 
-const EXPOSURE = 1.0;
+const EXPOSURE = 0.1;
 const BLOOM_STRENGTH = 0.6;
 const BLOOM_RADIUS = 0.0003;
 const BLOOM_THRESHOLD = 0.1;
@@ -148,7 +148,7 @@ const doStep = (p: any) => {
 	const velocity = curlNoise({ p: p.mul(NOISE_SCALE) }).mul(SPEED).toVar();
 	p.addAssign(velocity);
 	// Colour by direction of travel, exactly as in the reference.
-	return hue2rgb({ h: atan(velocity.y, velocity.x).div(Math.PI).add(1).mul(0.5) });
+	return hue2rgb({ h: atan(velocity.y, velocity.x).div(Math.PI).add(1).mul(0.5) }).add(.01);
 };
 
 /**
@@ -197,11 +197,11 @@ const computeUpdate = Fn(() => {
 	trailColors.element(trailIndex(trailSlot)).assign(color);
 	position.assign(p);
 
-	/*If(life.lessThanEqual(0), () => {
+	If(life.lessThanEqual(0), () => {
 		const fresh = spawn({ seed: seedFor() }).toVar();
 		life.assign(fresh.w);
 		position.assign(rollTrail(fresh.xyz));
-	});*/
+	});
 })().compute(PARTICLE_COUNT);
 
 // ---------------------------------------------------------------------------
@@ -332,16 +332,26 @@ const lightDirection = normalize(vec3(0.4, 0.8, 0.5));
 const viewDirection = normalize(cameraPosition.sub(positionWorld));
 const halfway = normalize(lightDirection.add(viewDirection));
 // Interpolating across the band shortens the normal, hence the renormalise.
-const specular = pow(dot(normalize(surfaceNormal), halfway).max(0), 64).mul(1.0);
+// How much glowing gas this ray crossed. A ray that hits a cylinder of radius R
+// where the surface normal makes angle theta with the view exits after 2*R*cos(theta),
+// and cos(theta) is exactly dot(N, V) -- so the chord length, normalised to 1 at the
+// centre of the silhouette and 0 at its edge, costs one dot product of things the
+// shader already has. Averaged across the tube's width this comes to PI/4, so the
+// reciprocal keeps total emitted energy where it was before rather than dimming
+// everything by a fifth.
+const chord = dot(normalize(surfaceNormal), viewDirection).max(0).mul(4 / Math.PI);
+
+const specular = pow(dot(normalize(surfaceNormal), halfway).max(0), 8);
+const specularStepped = specular.greaterThan(0.5).select(float(1), float(0)).mul(2);
 
 const material = new THREE.MeshBasicNodeMaterial({
-	depthWrite: true,
-	depthTest: true,
-	blending: THREE.NoBlending,
-	alphaTest: 0.001,
+	depthWrite: false,
+	depthTest: false,
+	blending: THREE.AdditiveBlending,
+	//alphaTest: 0.001,
 });
 material.positionNode = center.add(offset.mul(radius));
-material.colorNode = emittance.mul(0.5).add(specular);
+material.colorNode = emittance.mul(chord).add(specularStepped);
 material.opacityNode = trailFade;
 
 const particles = new THREE.Mesh(buildSegmentGeometry(), material);
