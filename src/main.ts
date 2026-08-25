@@ -148,6 +148,12 @@ const trailIndex = (n: any) => instanceIndex.mul(uint(TAIL_LENGTH)).add(n);
 /** One step of the flow: advance `p`, and give back the colour for that step. */
 const doStep = (p: any) => {
 	const velocity = curlNoise({ p: p.mul(NOISE_SCALE) }).mul(SPEED).toVar();
+	const pLen = p.length();
+	const pLenCompressed = pLen.pow(float(frame).mul(0.1).sin().mul(0.9).add(.1));
+	const p2 = p.mul(pLenCompressed.div(pLen.add(1e-8)));
+	velocity.addAssign(p2.sub(p).mul(float(0.1)));
+
+	velocity.addAssign(velocity.mul(float(0.5)).mul(valueNoise({ p: p.mul(NOISE_SCALE * 2) })));
 	p.addAssign(velocity);
 	// Colour by direction of travel, exactly as in the reference.
 	return hue2rgb({ h: atan(velocity.y, velocity.x).div(Math.PI).add(1).mul(0.5) }).add(.01);
