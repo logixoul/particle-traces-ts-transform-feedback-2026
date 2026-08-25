@@ -149,7 +149,7 @@ const trailIndex = (n: any) => instanceIndex.mul(uint(TAIL_LENGTH)).add(n);
 const doStep = (p: any) => {
 	const velocity = curlNoise({ p: p.mul(NOISE_SCALE) }).mul(SPEED).toVar();
 	const pLen = p.length();
-	const pLenCompressed = pLen.pow(float(frame).mul(0.1).sin().mul(0.9).add(.1));
+	const pLenCompressed = pLen.pow(float(frame).mul(0.1).sin().mul(0.9).add(.3));
 	const p2 = p.mul(pLenCompressed.div(pLen.add(1e-8)));
 	velocity.addAssign(p2.sub(p).mul(float(0.1)));
 
@@ -418,7 +418,7 @@ const scene = new THREE.Scene();
 scene.add(particles);
 
 const camera = new THREE.PerspectiveCamera(120, window.innerWidth / window.innerHeight, 0.01, 100);
-camera.position.set(0, 0, 0.3);
+camera.position.set(0, 0, 1.1);
 
 const renderer = new THREE.WebGPURenderer({ antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
