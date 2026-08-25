@@ -3,27 +3,27 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import {
 	Fn, If, Loop, float, uint, uv, uniform, instancedArray, instanceIndex,
-	atan, smoothstep, fwidth, wgslFn, pass, varying,
+	atan, smoothstep, fwidth, wgslFn, pass, varying, step
 } from 'three/tsl';
 
 // ---------------------------------------------------------------------------
 // Parameters (ported from ParticleLogic.js)
 // ---------------------------------------------------------------------------
 
-const PARTICLE_COUNT = 3_000;
-const TAIL_LENGTH = 50;      // history samples per particle, as in the reference
+const PARTICLE_COUNT = 1_000;
+const TAIL_LENGTH = 100;      // history samples per particle, as in the reference
 const TRAIL_POINTS = PARTICLE_COUNT * TAIL_LENGTH; // one sprite per sample
 const LIFESPAN = 100;        // frames
 const NOISE_SCALE = 6.3;      // spatial frequency of the curl field
 const SPEED = 0.005;           // world units per frame
 const CURL_EPS = 0.01;        // central-difference step for the curl
-const PARTICLE_SIZE = 0.005;  // sprite diameter in world units
+const PARTICLE_SIZE = 0.008;  // sprite diameter in world units
 
 // Post-processing, ported from the reference App.js.
 const EXPOSURE = 0.5;         // additive blending blows way past 1, so pull it back hard
 const BLOOM_STRENGTH = 0.6;
-const BLOOM_RADIUS = 0.1;
-const BLOOM_THRESHOLD = 0.0;  // only genuinely dense clumps glow
+const BLOOM_RADIUS = 0.0003;
+const BLOOM_THRESHOLD = 1.0;  // only genuinely dense clumps glow
 
 /** JS number -> WGSL f32 literal (`1` is an integer literal in WGSL, `1.0` is not). */
 const f32 = (n: number) => (Number.isInteger(n) ? `${n}.0` : `${n}`);
@@ -73,7 +73,7 @@ fn valueNoise( p: vec3f ) -> f32 {
  */
 const curlNoise = wgsl(`
 fn curlNoise( p: vec3f ) -> vec3f {
-	return vec3f(valueNoise(p), valueNoise(p.yzx + vec3f(100.0)), valueNoise(p.zxy + vec3f(200.0))); // Placeholder for actual curl noise computation
+	//return vec3f(valueNoise(p), valueNoise(p.yzx + vec3f(100.0)), valueNoise(p.zxy + vec3f(200.0))); // Placeholder for actual curl noise computation
 	let e = ${f32(CURL_EPS)};
 	let k = 1.0 / ( 2.0 * e );
 
@@ -143,7 +143,7 @@ const seedFor = () => instanceIndex.mul(uint(4)).add(frame.mul(uint(1000003)));
 const trailIndex = (n: any) => instanceIndex.mul(uint(TAIL_LENGTH)).add(n);
 
 /** One step of the flow: advance `p`, and give back the colour for that step. */
-const step = (p: any) => {
+const doStep = (p: any) => {
 	const velocity = curlNoise({ p: p.mul(NOISE_SCALE) }).mul(SPEED).toVar();
 	p.addAssign(velocity);
 	// Colour by direction of travel, exactly as in the reference.
@@ -161,7 +161,7 @@ const rollTrail = (position: any) => {
 	const p = position.toVar();
 
 	Loop({ type: 'uint', start: 0, end: TAIL_LENGTH }, ({ i }) => {
-		const color = step(p);
+		const color = doStep(p);
 
 		// Walk the ring forward from the head so the last step written is the newest
 		// sample, leaving the per-frame appends below in the right phase.
@@ -188,7 +188,7 @@ const computeUpdate = Fn(() => {
 	const life = lifeBuffer.element(instanceIndex);
 
 	const p = position.toVar();
-	const color = step(p);
+	const color = doStep(p);
 	life.subAssign(1);
 
 	// Append the new head of the trail.
@@ -210,7 +210,7 @@ const computeUpdate = Fn(() => {
 // Distance from the sprite centre, 0 at the centre and 1 at the disc edge.
 const r = uv().sub(0.5).length().mul(2);
 // fwidth(r) is exactly one pixel expressed in r's units, so this is a 1px edge.
-const disc = smoothstep(float(1).sub(fwidth(r)), 1, r).oneMinus();
+const disc = step(float(1), r).oneMinus();
 
 // Trail fade. A sample's age is how far its ring slot sits behind the head, so it
 // has to be worked out here at draw time -- the stored colour is written once and
