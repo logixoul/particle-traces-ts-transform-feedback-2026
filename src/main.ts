@@ -19,7 +19,7 @@ const NOISE_SCALE = 6.3;      // spatial frequency of the curl field
 const SPEED = 0.003;           // world units per frame
 const CURL_EPS = 0.01;        // central-difference step for the curl
 const PARTICLE_SIZE = 0.01;  // tube diameter in world units
-const AXIAL_MAX = 4;          // cap on the look-down-the-barrel emittance flare
+const AXIAL_MAX = 40;          // cap on the look-down-the-barrel emittance flare
 const TUBE_SIDES = 6;         // radial segments per tube; 4 x this many triangles per trail sample
 
 const EXPOSURE = 0.1;
@@ -149,7 +149,7 @@ const doStep = (p: any) => {
 	const velocity = curlNoise({ p: p.mul(NOISE_SCALE) }).mul(SPEED).toVar();
 	p.addAssign(velocity);
 	// Colour by direction of travel, exactly as in the reference.
-	return hue2rgb({ h: atan(velocity.y, velocity.x).div(Math.PI).add(1).mul(0.5) }).add(.01);
+	return hue2rgb({ h: atan(velocity.y, velocity.x).div(Math.PI).add(1).mul(0.5) }).add(.1);
 };
 
 /**
