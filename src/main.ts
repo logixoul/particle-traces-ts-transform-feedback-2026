@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import {
 	Fn, If, Loop, float, uint, uniform, instancedArray, instanceIndex,
-	atan, wgslFn, pass, varying, vec3, normalize, dot, pow,
+	atan, wgslFn, pass, varying, vec3, normalize, dot, pow, inverseSqrt,
 	positionGeometry, positionWorld, cameraPosition
 } from 'three/tsl';
 
@@ -19,6 +19,7 @@ const NOISE_SCALE = 6.3;      // spatial frequency of the curl field
 const SPEED = 0.003;           // world units per frame
 const CURL_EPS = 0.01;        // central-difference step for the curl
 const PARTICLE_SIZE = 0.01;  // tube diameter in world units
+const AXIAL_MAX = 4;          // cap on the look-down-the-barrel emittance flare
 const TUBE_SIDES = 6;         // radial segments per tube; 4 x this many triangles per trail sample
 
 const EXPOSURE = 0.1;
@@ -314,6 +315,10 @@ const radius = isSeam.select(float(0), float(PARTICLE_SIZE * 0.5));
 const offset = ringOffset({ dir: axis, cs: positionGeometry.xy });
 // : any because varying() is typed as returning a bare Node, which blocks normalize().
 const surfaceNormal: any = varying(offset);
+// The tube's own direction, needed per-fragment for the axial term below. Ring 0 is
+// perpendicular to the previous segment, so this interpolates across the bevel band
+// rather than stepping -- which is what you want, and why it needs renormalising.
+const tubeAxis: any = varying(axis);
 
 // The colour is carried per ring so it interpolates along the segment instead of
 // stepping at every join.
@@ -341,6 +346,15 @@ const halfway = normalize(lightDirection.add(viewDirection));
 // everything by a fifth.
 const chord = dot(normalize(surfaceNormal), viewDirection).max(0).mul(4 / Math.PI);
 
+// A ray running along a tube rather than across it crosses correspondingly more gas:
+// the cross-section chord above gets divided by sin(angle between ray and axis), so a
+// tube pointing at the camera flares. That diverges when you look straight down one,
+// hence AXIAL_MAX -- clamping 1/sin to it is the same as flooring sin^2 at its
+// reciprocal square, which gets the whole thing down to one inverseSqrt with no
+// division and no infinity to nurse. AXIAL_MAX doubles as the flare's brightness knob.
+const alongAxis = dot(normalize(tubeAxis), viewDirection);
+const axial = inverseSqrt(alongAxis.mul(alongAxis).oneMinus().max(1 / (AXIAL_MAX * AXIAL_MAX)));
+
 const specular = pow(dot(normalize(surfaceNormal), halfway).max(0), 8);
 const specularStepped = specular.greaterThan(0.5).select(float(1), float(0)).mul(2);
 
@@ -351,7 +365,7 @@ const material = new THREE.MeshBasicNodeMaterial({
 	//alphaTest: 0.001,
 });
 material.positionNode = center.add(offset.mul(radius));
-material.colorNode = emittance.mul(chord).add(specularStepped);
+material.colorNode = emittance.mul(chord).mul(axial).add(specularStepped);
 material.opacityNode = trailFade;
 
 const particles = new THREE.Mesh(buildSegmentGeometry(), material);
