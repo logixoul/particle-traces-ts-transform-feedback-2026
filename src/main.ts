@@ -3,7 +3,14 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import {
 	Fn, If, Loop, float, uint, uv, uniform, instancedArray, instanceIndex,
-	atan, smoothstep, fwidth, wgslFn, pass, varying, step
+	atan, smoothstep, fwidth, wgslFn, pass, varying, step,
+	vec3,
+	normalize,
+	cameraViewMatrix,
+	vec4,
+	positionViewDirection,
+	dot,
+	pow
 } from 'three/tsl';
 
 // ---------------------------------------------------------------------------
@@ -20,7 +27,7 @@ const CURL_EPS = 0.01;        // central-difference step for the curl
 const PARTICLE_SIZE = 0.02;  // sprite diameter in world units
 
 // Post-processing, ported from the reference App.js.
-const EXPOSURE = 4.5;         // additive blending blows way past 1, so pull it back hard
+const EXPOSURE = 1.5;         // additive blending blows way past 1, so pull it back hard
 const BLOOM_STRENGTH = 0.6;
 const BLOOM_RADIUS = 0.0003;
 const BLOOM_THRESHOLD = 0.1;  // only genuinely dense clumps glow
@@ -212,6 +219,16 @@ const r = uv().sub(0.5).length().mul(2);
 // fwidth(r) is exactly one pixel expressed in r's units, so this is a 1px edge.
 const disc = step(float(1), r).oneMinus();
 
+const d  = uv().sub(0.5).mul(2);                 // [-1,1] across the sprite
+const normalZ = r.mul(r).oneMinus().max(0).sqrt();    // sqrt(1 - x² - y²)
+const N  = vec3(d.x, d.y, normalZ);
+const lightDirWorld = vec3(0.4, 0.8, 0.5);
+const L = normalize(cameraViewMatrix.mul(vec4(lightDirWorld, 0)).xyz);
+const V = positionViewDirection;
+const H = normalize(L.add(V));
+const diff = dot(N, L).max(0);
+const spec = pow(dot(N, H).max(0), 40).mul(2.0);
+
 // Trail fade. A sample's age is how far its ring slot sits behind the head, so it
 // has to be worked out here at draw time -- the stored colour is written once and
 // never revisited, so baking a fade into it would freeze each sample at whatever
@@ -227,7 +244,7 @@ const material = new THREE.SpriteNodeMaterial({
 	//transparent: true,
 	depthWrite: true,
 	depthTest: true,
-	blending: THREE.NormalBlending,
+	blending: THREE.NoBlending,
 	alphaTest: 0.001,
 });
 // One sprite per trail sample, so the trails need no rendering code of their own.
@@ -235,7 +252,8 @@ material.positionNode = trailPositions.toAttribute();
 // .xyz matters: storage buffers of vec3 are padded to 4 floats on the GPU, so the
 // attribute arrives as a vec4 whose w is the never-written padding. Assigning the
 // whole vec4 to colorNode would set the material's alpha to 0 and draw nothing.
-material.colorNode = trailColors.toAttribute().xyz;
+const base = trailColors.toAttribute().xyz;
+material.colorNode = base.mul(0.5).add(diff.mul(0.5)).add(spec);
 material.opacityNode = disc.mul(trailFade);
 // sizeAttenuation stays on, so the on-screen radius is proportional to
 // PARTICLE_SIZE / -z_view -- i.e. it falls off with camera-space depth.
