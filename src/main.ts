@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
+import { createAudioReactor } from './audio';
 import {
 	Fn, If, Loop, float, uint, uniform, instancedArray, instanceIndex,
 	atan, wgslFn, pass, varying, vec3, normalize, dot, pow, inverseSqrt,
@@ -27,6 +28,15 @@ const EXPOSURE = 0.6;
 const BLOOM_STRENGTH = 0.6;
 const BLOOM_RADIUS = 0.0003;
 const BLOOM_THRESHOLD = 0.1;
+
+// Audio reactivity. The mp3 sits in the project root, which the vite dev server serves
+// as-is; a production build would need it moved into public/ to get copied across.
+const MUSIC_URL = encodeURI("/EDGE (Blanke Remix).mp3");
+// A full-strength kick multiplies the exposure by 1 + this.
+const BASS_EXPOSURE_BOOST = 1.4;
+// A full-strength snare drops the bloom threshold by this much, so dimmer parts of the
+// scene cross it and the whole field flares for a few frames.
+const SNARE_THRESHOLD_DROP = 0.09;
 
 /** JS number -> WGSL f32 literal (`1` is an integer literal in WGSL, `1.0` is not). */
 const f32 = (n: number) => (Number.isInteger(n) ? `${n}.0` : `${n}`);
@@ -434,9 +444,10 @@ document.body.appendChild(renderer.domElement);
 // UnrealBloomPass -> OutputPass in the reference. The pass resizes with the canvas.
 const scenePass = pass(scene, camera).getTextureNode();
 const postProcessing = new THREE.RenderPipeline(renderer);
-postProcessing.outputNode = scenePass.add(
-	bloom(scenePass, BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD),
-);
+const bloomPass = bloom(scenePass, BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD);
+postProcessing.outputNode = scenePass.add(bloomPass);
+
+const audio = createAudioReactor(MUSIC_URL);
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -470,14 +481,21 @@ async function main() {
 		renderer.compute(computeUpdate);
 		renderer.compute(computeUpdate);
 
+		const now = performance.now();
+		audio.update(now);
+		// Both are driven every frame rather than only on a hit, so they slide back to
+		// their resting values with the envelope instead of snapping back.
+		renderer.toneMappingExposure = EXPOSURE * (1 + BASS_EXPOSURE_BOOST * audio.bass);
+		bloomPass.threshold.value = Math.max(0, BLOOM_THRESHOLD - SNARE_THRESHOLD_DROP * audio.snare);
+
 		controls.update();
 		postProcessing.render();
 
-		const now = performance.now();
 		fps += (1000 / (now - last) - fps) * 0.05;
 		last = now;
 		info.textContent = `${PARTICLE_COUNT.toLocaleString()} particles`
-			+ ` x ${TAIL_LENGTH} trail   ${fps.toFixed(0)} fps`;
+			+ ` x ${TAIL_LENGTH} trail   ${fps.toFixed(0)} fps`
+			+ (audio.playing ? `` : `   [click to start the music]`);
 	});
 }
 
