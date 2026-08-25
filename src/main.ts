@@ -15,15 +15,15 @@ const TAIL_LENGTH = 100;      // history samples per particle, as in the referen
 const TRAIL_POINTS = PARTICLE_COUNT * TAIL_LENGTH; // one sprite per sample
 const LIFESPAN = 100;        // frames
 const NOISE_SCALE = 6.3;      // spatial frequency of the curl field
-const SPEED = 0.005;           // world units per frame
+const SPEED = 0.001;           // world units per frame
 const CURL_EPS = 0.01;        // central-difference step for the curl
-const PARTICLE_SIZE = 0.008;  // sprite diameter in world units
+const PARTICLE_SIZE = 0.02;  // sprite diameter in world units
 
 // Post-processing, ported from the reference App.js.
-const EXPOSURE = 0.5;         // additive blending blows way past 1, so pull it back hard
+const EXPOSURE = 4.5;         // additive blending blows way past 1, so pull it back hard
 const BLOOM_STRENGTH = 0.6;
 const BLOOM_RADIUS = 0.0003;
-const BLOOM_THRESHOLD = 1.0;  // only genuinely dense clumps glow
+const BLOOM_THRESHOLD = 0.1;  // only genuinely dense clumps glow
 
 /** JS number -> WGSL f32 literal (`1` is an integer literal in WGSL, `1.0` is not). */
 const f32 = (n: number) => (Number.isInteger(n) ? `${n}.0` : `${n}`);
@@ -147,7 +147,7 @@ const doStep = (p: any) => {
 	const velocity = curlNoise({ p: p.mul(NOISE_SCALE) }).mul(SPEED).toVar();
 	p.addAssign(velocity);
 	// Colour by direction of travel, exactly as in the reference.
-	return hue2rgb({ h: atan(velocity.y, velocity.x).div(Math.PI).add(1).mul(0.5) });
+	return hue2rgb({ h: atan(velocity.y, velocity.x).div(Math.PI).add(1).mul(0.5) }).add(0.01);
 };
 
 /**
@@ -196,11 +196,11 @@ const computeUpdate = Fn(() => {
 	trailColors.element(trailIndex(trailSlot)).assign(color);
 	position.assign(p);
 
-	If(life.lessThanEqual(0), () => {
+	/*If(life.lessThanEqual(0), () => {
 		const fresh = spawn({ seed: seedFor() }).toVar();
 		life.assign(fresh.w);
 		position.assign(rollTrail(fresh.xyz));
-	});
+	});*/
 })().compute(PARTICLE_COUNT);
 
 // ---------------------------------------------------------------------------
@@ -224,9 +224,11 @@ const sampleAge = trailSlot.add(uint(TAIL_LENGTH)).sub(sampleSlot).mod(uint(TAIL
 const trailFade = varying(sampleAge.toFloat().div(TAIL_LENGTH).oneMinus()).pow2();
 
 const material = new THREE.SpriteNodeMaterial({
-	transparent: true,
-	depthWrite: false,
-	blending: THREE.AdditiveBlending,
+	//transparent: true,
+	depthWrite: true,
+	depthTest: true,
+	blending: THREE.NormalBlending,
+	alphaTest: 0.001,
 });
 // One sprite per trail sample, so the trails need no rendering code of their own.
 material.positionNode = trailPositions.toAttribute();
@@ -250,14 +252,15 @@ particles.frustumCulled = false;
 const scene = new THREE.Scene();
 scene.add(particles);
 
-const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 100);
+const camera = new THREE.PerspectiveCamera(90, window.innerWidth / window.innerHeight, 0.01, 100);
 camera.position.set(0, 0, 2);
 
 const renderer = new THREE.WebGPURenderer({ antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
+//renderer.toneMapping = THREE.ACESFilmicToneMapping;
 //renderer.toneMapping = THREE.LinearToneMapping;
+renderer.toneMapping = THREE.AgXToneMapping;
 renderer.toneMappingExposure = EXPOSURE;
 document.body.appendChild(renderer.domElement);
 
@@ -298,6 +301,8 @@ async function main() {
 	renderer.setAnimationLoop(() => {
 		frame.value += 1;
 		trailSlot.value = (trailSlot.value + 1) % TAIL_LENGTH;
+		renderer.compute(computeUpdate);
+		renderer.compute(computeUpdate);
 		renderer.compute(computeUpdate);
 
 		controls.update();
