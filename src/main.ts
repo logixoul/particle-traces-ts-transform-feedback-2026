@@ -366,7 +366,7 @@ const fresnel = dot(halfway, viewDirection).max(0).oneMinus().pow(5)
 	.mul(1 - SPECULAR_F0).add(SPECULAR_F0);
 const specularStepped = specular.greaterThan(0.5).select(float(1), float(0)).mul(10).mul(fresnel);
 
-const diffuse = 
+//const diffuse =
 
 const material = new THREE.MeshBasicNodeMaterial({
 	depthWrite: true,
