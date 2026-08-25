@@ -304,6 +304,14 @@ const hasPrevious = age.lessThan(uint(TAIL_LENGTH - 2));
 const direction = normalize(newer.sub(older));
 const previousDirection = hasPrevious.select(normalize(older.sub(oldest)), direction);
 
+// The sample one step newer than this segment's newer end, for the same reason:
+// the joint there needs to know which way the tube leaves. age 0 is the head and has
+// no newer neighbour, so it reads its own sample instead -- select() picks the index
+// before the fetch, so the underflowed age - 1 is never used to address the buffer.
+const hasNext = age.greaterThan(uint(0));
+const newest = trailPositions.element(sampleIndex(hasNext.select(age.sub(uint(1)), age)));
+const nextDirection = hasNext.select(normalize(newest.sub(newer)), direction);
+
 // Rings 0 and 1 sit at the older end, ring 2 at the newer end; ring 0 is the only
 // one perpendicular to the previous segment, which is what makes the bevel.
 const center = isSeam.select(older, ring.lessThan(1.5).select(older, newer));
@@ -314,8 +322,23 @@ const radius = isSeam.select(float(0), float(PARTICLE_SIZE * 0.5));
 // duty. varying() moves both this and the colour into the vertex stage, which they
 // need anyway: instanceIndex is a vertex-only builtin.
 const offset = ringOffset({ dir: axis, cs: positionGeometry.xy });
+
+// Shading normals are smoothed across the joints, which is the whole reason the tube
+// does not look faceted. A bevel joint is a genuine normal discontinuity -- that is
+// what a bevel is -- so shading straight off `offset` makes every segment boundary a
+// visible crease, and at the current SPEED the flow turns far enough per step for
+// that to read as a jagged, chopped-up highlight.
+//
+// The fix is the standard one: keep the faceted geometry, but tilt each normal to be
+// perpendicular to the *average* of the two directions meeting at its joint. Doing it
+// by projecting the joint axis out of `offset` rather than rebuilding a ring keeps
+// the vertex's angular position intact, and the two segments sharing a joint derive
+// the same axis from the same two samples, so the normal agrees exactly across it.
+const jointAxis = ring.lessThan(1.5)
+	.select(normalize(direction.add(previousDirection)), normalize(direction.add(nextDirection)));
+const smoothedNormal = offset.sub(jointAxis.mul(dot(offset, jointAxis)));
 // : any because varying() is typed as returning a bare Node, which blocks normalize().
-const surfaceNormal: any = varying(offset);
+const surfaceNormal: any = varying(smoothedNormal);
 // The tube's own direction, needed per-fragment for the axial term below. Ring 0 is
 // perpendicular to the previous segment, so this interpolates across the bevel band
 // rather than stepping -- which is what you want, and why it needs renormalising.
