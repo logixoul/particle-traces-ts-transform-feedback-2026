@@ -35,15 +35,15 @@ const FFT_SIZE = 1024;
  * The snare wants a finer margin than the kick: hi-hats keep the upper mids busy all
  * the time, so that band is much steadier and a backbeat stands out of it by less.
  */
-const BASS = { hz: [30, 150], margin: 0.04, floor: 0.15 };
-const SNARE = { hz: [1500, 5000], margin: 0.02, floor: 0.10 };
+const BASS = { hz: [10, 1500], margin: 0.1, floor: -9999.0 };
+const SNARE = { hz: [1500, 5000], margin: 0.02, floor: -9999.0 };
 
 // How fast the running average chases the signal. Low, so that the average represents
 // roughly the last few hundred ms of the band and a hit stands out against it.
 const AVERAGE_SMOOTHING = 0.08;
 // Shortest gap between two hits of the same drum. Mostly this stops one kick from
 // registering two or three times as its envelope rings.
-const REFRACTORY_MS = 120;
+const REFRACTORY_MS = 220;
 // How quickly the output envelope falls back to 0 after a hit.
 const ENVELOPE_HALF_LIFE_MS = 90;
 
@@ -60,6 +60,7 @@ class Band {
 
 	/** 1 on a hit, decaying towards 0. This is what the scene reads. */
 	level = 0;
+	smoothedLevel = 0;
 
 	constructor({ hz, margin, floor }: BandConfig, binHz: number) {
 		// Bin 0 is DC and carries the signal's offset rather than any audible energy,
@@ -84,9 +85,10 @@ class Band {
 			// whether the scene is running at 30fps or 144.
 			this.level *= Math.pow(0.5, dt / ENVELOPE_HALF_LIFE_MS);
 		}
-
+		
 		// Updated after the test, so a hit does not get to raise the bar it just cleared.
 		this.average += (energy - this.average) * AVERAGE_SMOOTHING;
+		this.smoothedLevel += (this.level - this.smoothedLevel) * 0.2;
 	}
 }
 
@@ -145,7 +147,8 @@ export function createAudioReactor(url: string): AudioReactor {
 		source.buffer = buffer;
 		source.loop = true;
 		source.connect(analyser).connect(context.destination);
-		source.start();
+		source.start(0, 36);
+		
 		playing = true;
 	};
 
@@ -155,8 +158,8 @@ export function createAudioReactor(url: string): AudioReactor {
 	window.addEventListener('keydown', tryToPlay);
 
 	return {
-		get bass() { return bass.level; },
-		get snare() { return snare.level; },
+		get bass() { return bass.smoothedLevel; },
+		get snare() { return snare.smoothedLevel; },
 		get playing() { return playing; },
 		update(now: number) {
 			const dt = lastUpdate < 0 ? 0 : now - lastUpdate;

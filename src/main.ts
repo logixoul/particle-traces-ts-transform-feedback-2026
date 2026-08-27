@@ -159,13 +159,15 @@ const trailIndex = (n: any) => instanceIndex.mul(uint(TAIL_LENGTH)).add(n);
 const doStep = (p: any) => {
 	const velocity = curlNoise({ p: p.mul(NOISE_SCALE) }).mul(SPEED).toVar();
 	const pLen = p.length();
-	const pLenCompressed = pLen.pow(float(frame).mul(0.1).sin().mul(0.9).add(.3));
+	const pLenCompressed = pLen.pow(float(frame).mul(0.1).sin().mul(0.5).add(.7));
+	If(pLenCompressed.lessThan(float(1.0)), () => {
+		pLenCompressed.assign(pLen.max(pLenCompressed));
+	});
 	const p2 = p.mul(pLenCompressed.div(pLen.add(1e-8)));
 	velocity.addAssign(p2.sub(p).mul(float(0.1)));
 
-	velocity.addAssign(velocity.mul(float(0.5)).mul(valueNoise({ p: p.mul(NOISE_SCALE * 2) })));
 	p.addAssign(velocity);
-	// Colour by direction of travel, exactly as in the reference.
+	// Colour by direction of travel
 	return hue2rgb({ h: atan(velocity.y, velocity.x).div(Math.PI).add(1).mul(0.5) }).add(.01);
 };
 
@@ -485,7 +487,11 @@ async function main() {
 		audio.update(now);
 		// Both are driven every frame rather than only on a hit, so they slide back to
 		// their resting values with the envelope instead of snapping back.
-		renderer.toneMappingExposure = EXPOSURE * (1 + BASS_EXPOSURE_BOOST * audio.bass);
+		
+		camera.zoom = 1 + 0.2 * audio.bass;
+		camera.updateMatrix();
+		camera.updateProjectionMatrix();
+		//renderer.toneMappingExposure = EXPOSURE * (1 + BASS_EXPOSURE_BOOST * audio.bass);
 		bloomPass.threshold.value = Math.max(0, BLOOM_THRESHOLD - SNARE_THRESHOLD_DROP * audio.snare);
 
 		controls.update();
