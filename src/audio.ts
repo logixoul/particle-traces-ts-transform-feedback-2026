@@ -45,7 +45,7 @@ const AVERAGE_SMOOTHING = 0.08;
 // registering two or three times as its envelope rings.
 const REFRACTORY_MS = 220;
 // How quickly the output envelope falls back to 0 after a hit.
-const ENVELOPE_HALF_LIFE_MS = 90;
+const ENVELOPE_HALF_LIFE_MS = 600;
 
 type BandConfig = { hz: number[]; margin: number; floor: number };
 
@@ -61,6 +61,7 @@ class Band {
 	/** 1 on a hit, decaying towards 0. This is what the scene reads. */
 	level = 0;
 	smoothedLevel = 0;
+	hitCallback: (() => void) | null = null;
 
 	constructor({ hz, margin, floor }: BandConfig, binHz: number) {
 		// Bin 0 is DC and carries the signal's offset rather than any audible energy,
@@ -80,6 +81,9 @@ class Band {
 			&& now - this.lastHitAt > REFRACTORY_MS) {
 			this.lastHitAt = now;
 			this.level = 1;
+			if(this.hitCallback) {
+				this.hitCallback();
+			}
 		} else {
 			// Half-life rather than a per-frame constant, so the decay looks the same
 			// whether the scene is running at 30fps or 144.
@@ -94,9 +98,9 @@ class Band {
 
 export type AudioReactor = {
 	/** Kick envelope, 1 on a hit and decaying to 0. */
-	readonly bass: number;
+	readonly bass: Band;
 	/** Snare envelope, same shape. */
-	readonly snare: number;
+	readonly snare: Band;
 	/** False until the browser lets the track start. */
 	readonly playing: boolean;
 	/** Call once per frame with performance.now(). */
@@ -158,8 +162,8 @@ export function createAudioReactor(url: string): AudioReactor {
 	window.addEventListener('keydown', tryToPlay);
 
 	return {
-		get bass() { return bass.smoothedLevel; },
-		get snare() { return snare.smoothedLevel; },
+		get bass() { return bass; },
+		get snare() { return snare; },
 		get playing() { return playing; },
 		update(now: number) {
 			const dt = lastUpdate < 0 ? 0 : now - lastUpdate;

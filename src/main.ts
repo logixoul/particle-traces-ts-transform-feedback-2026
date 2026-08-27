@@ -50,6 +50,19 @@ const wgsl = (code: string, includes: any[] = []) =>
 // argument to wgsl() lists the functions it calls so they get emitted too.
 // ---------------------------------------------------------------------------
 
+function randomQuaternion() {
+    const u1 = Math.random();
+    const u2 = Math.random();
+    const u3 = Math.random();
+    
+    const w = Math.sqrt(1 - u1) * Math.sin(2 * Math.PI * u2);
+    const x = Math.sqrt(1 - u1) * Math.cos(2 * Math.PI * u2);
+    const y = Math.sqrt(u1) * Math.sin(2 * Math.PI * u3);
+    const z = Math.sqrt(u1) * Math.cos(2 * Math.PI * u3);
+    
+    return new THREE.Quaternion(x, y, z, w);
+}
+
 /** Lattice hash: vec3 -> [0,1) */
 const hash31 = wgsl(`
 fn hash31( p: vec3f ) -> f32 {
@@ -146,11 +159,12 @@ const lifeBuffer = instancedArray(PARTICLE_COUNT, 'float');
 const trailPositions = instancedArray(TRAIL_POINTS, 'vec3');
 const trailColors = instancedArray(TRAIL_POINTS, 'vec3');
 
-const frame = uniform(0, 'uint');
-const trailSlot = uniform(0, 'uint'); // ring slot written this frame
+const frameUniform = uniform(0, 'uint');
+const trailSlotUniform = uniform(0, 'uint'); // ring slot written this frame
+const bassUniform = uniform(0, 'float');
 
 /** Per-particle seed, decorrelated across frames. */
-const seedFor = () => instanceIndex.mul(uint(4)).add(frame.mul(uint(1000003)));
+const seedFor = () => instanceIndex.mul(uint(4)).add(frameUniform.mul(uint(1000003)));
 
 /** Index of this particle's slot `n` in the trail buffers. */
 const trailIndex = (n: any) => instanceIndex.mul(uint(TAIL_LENGTH)).add(n);
@@ -159,7 +173,8 @@ const trailIndex = (n: any) => instanceIndex.mul(uint(TAIL_LENGTH)).add(n);
 const doStep = (p: any) => {
 	const velocity = curlNoise({ p: p.mul(NOISE_SCALE) }).mul(SPEED).toVar();
 	const pLen = p.length();
-	const pLenCompressed = pLen.pow(float(frame).mul(0.1).sin().mul(0.5).add(.7));
+	//const pLenCompressed = pLen.pow(float(frameUniform).mul(0.1).sin().mul(0.5).add(.7));
+	const pLenCompressed = pLen.pow(bassUniform.mul(0.5).add(.7));
 	If(pLenCompressed.lessThan(float(1.0)), () => {
 		pLenCompressed.assign(pLen.max(pLenCompressed));
 	});
@@ -186,7 +201,7 @@ const rollTrail = (position: any) => {
 
 		// Walk the ring forward from the head so the last step written is the newest
 		// sample, leaving the per-frame appends below in the right phase.
-		const slot = trailSlot.add(i).add(uint(1)).toVar();
+		const slot = trailSlotUniform.add(i).add(uint(1)).toVar();
 		If(slot.greaterThanEqual(uint(TAIL_LENGTH)), () => {
 			slot.subAssign(uint(TAIL_LENGTH));
 		});
@@ -213,8 +228,8 @@ const computeUpdate = Fn(() => {
 	life.subAssign(1);
 
 	// Append the new head of the trail.
-	trailPositions.element(trailIndex(trailSlot)).assign(p);
-	trailColors.element(trailIndex(trailSlot)).assign(color);
+	trailPositions.element(trailIndex(trailSlotUniform)).assign(p);
+	trailColors.element(trailIndex(trailSlotUniform)).assign(color);
 	position.assign(p);
 
 	If(life.lessThanEqual(0), () => {
@@ -301,7 +316,7 @@ const age = instanceIndex.mod(uint(TAIL_LENGTH));
 const sampleIndex = (n: any) => particleIndex.mul(uint(TAIL_LENGTH))
 	// n reaches TAIL_LENGTH + 1 below, so two full turns of headroom keep the
 	// unsigned subtraction from wrapping.
-	.add(trailSlot.add(uint(2 * TAIL_LENGTH)).sub(n).mod(uint(TAIL_LENGTH)));
+	.add(trailSlotUniform.add(uint(2 * TAIL_LENGTH)).sub(n).mod(uint(TAIL_LENGTH)));
 
 const older = trailPositions.element(sampleIndex(age.add(uint(1))));
 const newer = trailPositions.element(sampleIndex(age));
@@ -429,7 +444,7 @@ particles.frustumCulled = false;
 const scene = new THREE.Scene();
 scene.add(particles);
 
-const camera = new THREE.PerspectiveCamera(120, window.innerWidth / window.innerHeight, 0.01, 100);
+const camera = new THREE.PerspectiveCamera(150, window.innerWidth / window.innerHeight, 0.01, 100);
 camera.position.set(0, 0, 1.1);
 
 const renderer = new THREE.WebGPURenderer({ antialias: true });
@@ -450,9 +465,14 @@ const bloomPass = bloom(scenePass, BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD
 postProcessing.outputNode = scenePass.add(bloomPass);
 
 const audio = createAudioReactor(MUSIC_URL);
+let destQuaternion = new THREE.Quaternion();
+let currentQuaternion = new THREE.Quaternion();
+audio.bass.hitCallback = () => {
+	destQuaternion = randomQuaternion();
+};
 
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
+//const controls = new OrbitControls(camera, renderer.domElement);
+//controls.enableDamping = true;
 
 window.addEventListener('resize', () => {
 	camera.aspect = window.innerWidth / window.innerHeight;
@@ -477,8 +497,9 @@ async function main() {
 	let fps = 0;
 
 	renderer.setAnimationLoop(() => {
-		frame.value += 1;
-		trailSlot.value = (trailSlot.value + 1) % TAIL_LENGTH;
+		frameUniform.value += 1;
+		bassUniform.value = audio.bass.smoothedLevel;
+		trailSlotUniform.value = (trailSlotUniform.value + 1) % TAIL_LENGTH;
 		renderer.compute(computeUpdate);
 		renderer.compute(computeUpdate);
 		renderer.compute(computeUpdate);
@@ -488,13 +509,18 @@ async function main() {
 		// Both are driven every frame rather than only on a hit, so they slide back to
 		// their resting values with the envelope instead of snapping back.
 		
-		camera.zoom = 1 + 0.2 * audio.bass;
+		const zoom = 1.5 - 0.4 * audio.snare.smoothedLevel;
+		currentQuaternion.slerp(destQuaternion, 0.1);
+		
+		camera.position.copy(
+			new THREE.Vector3(0, 0, zoom).applyQuaternion(currentQuaternion));
+		camera.lookAt(0, 0, 0);
 		camera.updateMatrix();
 		camera.updateProjectionMatrix();
-		//renderer.toneMappingExposure = EXPOSURE * (1 + BASS_EXPOSURE_BOOST * audio.bass);
-		bloomPass.threshold.value = Math.max(0, BLOOM_THRESHOLD - SNARE_THRESHOLD_DROP * audio.snare);
+		//renderer.toneMappingExposure = EXPOSURE * (1 + BASS_EXPOSURE_BOOST * audio.bass.smoothedLevel);
+		bloomPass.threshold.value = Math.max(0, BLOOM_THRESHOLD - SNARE_THRESHOLD_DROP * audio.snare.smoothedLevel);
 
-		controls.update();
+		//controls.update();
 		postProcessing.render();
 
 		fps += (1000 / (now - last) - fps) * 0.05;
