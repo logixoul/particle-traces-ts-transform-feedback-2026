@@ -5,7 +5,11 @@ import { createAudioReactor } from './audio';
 import {
 	Fn, If, Loop, float, uint, uniform, instancedArray, instanceIndex,
 	atan, wgslFn, pass, varying, vec3, normalize, dot, pow, inverseSqrt,
-	positionGeometry, positionWorld, cameraPosition
+	positionGeometry, positionWorld, cameraPosition,
+	mix,
+	vec4,
+	color,
+	luminance
 } from 'three/tsl';
 
 // ---------------------------------------------------------------------------
@@ -31,7 +35,7 @@ const BLOOM_THRESHOLD = 0.1;
 
 // Audio reactivity. The mp3 sits in the project root, which the vite dev server serves
 // as-is; a production build would need it moved into public/ to get copied across.
-const MUSIC_URL = encodeURI("/EDGE (Blanke Remix).mp3");
+const MUSIC_URL = encodeURI("/public/music.mp3");
 // A full-strength kick multiplies the exposure by 1 + this.
 const BASS_EXPOSURE_BOOST = 1.4;
 // A full-strength snare drops the bloom threshold by this much, so dimmer parts of the
@@ -162,6 +166,7 @@ const trailColors = instancedArray(TRAIL_POINTS, 'vec3');
 const frameUniform = uniform(0, 'uint');
 const trailSlotUniform = uniform(0, 'uint'); // ring slot written this frame
 const bassUniform = uniform(0, 'float');
+const smoothedBassUniform = uniform(0, 'float');
 
 /** Per-particle seed, decorrelated across frames. */
 const seedFor = () => instanceIndex.mul(uint(4)).add(frameUniform.mul(uint(1000003)));
@@ -174,10 +179,10 @@ const doStep = (p: any) => {
 	const velocity = curlNoise({ p: p.mul(NOISE_SCALE) }).mul(SPEED).toVar();
 	const pLen = p.length();
 	//const pLenCompressed = pLen.pow(float(frameUniform).mul(0.1).sin().mul(0.5).add(.7));
-	const pLenCompressed = pLen.pow(bassUniform.mul(0.5).add(.7));
-	If(pLenCompressed.lessThan(float(1.0)), () => {
-		pLenCompressed.assign(pLen.max(pLenCompressed));
-	});
+	const pLenCompressed = pLen.pow(smoothedBassUniform.mul(0.5).add(.5));
+	//If(pLenCompressed.lessThan(float(1.0)), () => {
+		//pLenCompressed.assign(pLen.max(pLenCompressed));
+	//});
 	const p2 = p.mul(pLenCompressed.div(pLen.add(1e-8)));
 	velocity.addAssign(p2.sub(p).mul(float(0.1)));
 
@@ -456,16 +461,21 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = EXPOSURE;
 document.body.appendChild(renderer.domElement);
 
+const redTint = (input: any, amount: any) =>
+	//luminance(input.rgb).mul(mix(vec3(1, .5, 0), vec3(1, 0, 0), amount));
+	input.rgb.mul(mix(vec3(1, 1, 1), vec3(1, 0, 0), amount))
+
 // Bloom over the HDR scene pass. RenderPipeline applies tone mapping and the sRGB
 // conversion to outputNode itself, so this is the same order as RenderPass ->
 // UnrealBloomPass -> OutputPass in the reference. The pass resizes with the canvas.
 const scenePass = pass(scene, camera).getTextureNode();
 const postProcessing = new THREE.RenderPipeline(renderer);
 const bloomPass = bloom(scenePass, BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD);
-postProcessing.outputNode = scenePass.add(bloomPass);
+postProcessing.outputNode = redTint(scenePass.add(bloomPass), bassUniform.pow(1.0));
 
 const audio = createAudioReactor(MUSIC_URL);
 let destQuaternion = new THREE.Quaternion();
+let destQuaternionSmoothed = new THREE.Quaternion();
 let currentQuaternion = new THREE.Quaternion();
 audio.bass.hitCallback = () => {
 	destQuaternion = randomQuaternion();
@@ -498,7 +508,8 @@ async function main() {
 
 	renderer.setAnimationLoop(() => {
 		frameUniform.value += 1;
-		bassUniform.value = audio.bass.smoothedLevel;
+		bassUniform.value = audio.bass.level;
+		smoothedBassUniform.value = audio.bass.smoothedLevel;
 		trailSlotUniform.value = (trailSlotUniform.value + 1) % TAIL_LENGTH;
 		renderer.compute(computeUpdate);
 		renderer.compute(computeUpdate);
@@ -509,8 +520,9 @@ async function main() {
 		// Both are driven every frame rather than only on a hit, so they slide back to
 		// their resting values with the envelope instead of snapping back.
 		
-		const zoom = 1.5 - 0.4 * audio.snare.smoothedLevel;
-		currentQuaternion.slerp(destQuaternion, 0.1);
+		const zoom = 1.6 - 0.4 * audio.snare.smoothedLevel;
+		destQuaternionSmoothed.slerp(destQuaternion, 0.4);
+		currentQuaternion.slerp(destQuaternionSmoothed, 0.1);
 		
 		camera.position.copy(
 			new THREE.Vector3(0, 0, zoom).applyQuaternion(currentQuaternion));

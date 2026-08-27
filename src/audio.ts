@@ -43,7 +43,7 @@ const SNARE = { hz: [1500, 5000], margin: 0.02, floor: -9999.0 };
 const AVERAGE_SMOOTHING = 0.08;
 // Shortest gap between two hits of the same drum. Mostly this stops one kick from
 // registering two or three times as its envelope rings.
-const REFRACTORY_MS = 220;
+const REFRACTORY_MS = 300;
 // How quickly the output envelope falls back to 0 after a hit.
 const ENVELOPE_HALF_LIFE_MS = 600;
 
@@ -60,7 +60,9 @@ class Band {
 
 	/** 1 on a hit, decaying towards 0. This is what the scene reads. */
 	level = 0;
+	levelFast = 0;
 	smoothedLevel = 0;
+	smoothedLevelFast = 0;
 	hitCallback: (() => void) | null = null;
 
 	constructor({ hz, margin, floor }: BandConfig, binHz: number) {
@@ -81,6 +83,7 @@ class Band {
 			&& now - this.lastHitAt > REFRACTORY_MS) {
 			this.lastHitAt = now;
 			this.level = 1;
+			this.levelFast = 1;
 			if(this.hitCallback) {
 				this.hitCallback();
 			}
@@ -88,11 +91,13 @@ class Band {
 			// Half-life rather than a per-frame constant, so the decay looks the same
 			// whether the scene is running at 30fps or 144.
 			this.level *= Math.pow(0.5, dt / ENVELOPE_HALF_LIFE_MS);
+			this.levelFast *= Math.pow(0.5, dt / 1000);
 		}
 		
 		// Updated after the test, so a hit does not get to raise the bar it just cleared.
 		this.average += (energy - this.average) * AVERAGE_SMOOTHING;
 		this.smoothedLevel += (this.level - this.smoothedLevel) * 0.2;
+		this.smoothedLevelFast += (this.levelFast - this.smoothedLevelFast) * 0.2;
 	}
 }
 
@@ -151,7 +156,7 @@ export function createAudioReactor(url: string): AudioReactor {
 		source.buffer = buffer;
 		source.loop = true;
 		source.connect(analyser).connect(context.destination);
-		source.start(0, 36);
+		source.start(0, 47.2);
 		
 		playing = true;
 	};
