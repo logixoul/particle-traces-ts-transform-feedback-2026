@@ -9,7 +9,12 @@ import {
 	mix,
 	vec4,
 	color,
-	luminance
+	luminance,
+	uv,
+	screenSize,
+	vec2,
+	length,
+	tan
 } from 'three/tsl';
 
 // ---------------------------------------------------------------------------
@@ -35,7 +40,7 @@ const BLOOM_THRESHOLD = 0.1;
 
 // Audio reactivity. The mp3 sits in the project root, which the vite dev server serves
 // as-is; a production build would need it moved into public/ to get copied across.
-const MUSIC_URL = encodeURI("/public/music.mp3");
+const MUSIC_URL = encodeURI("/music.mp3");
 // A full-strength snare drops the bloom threshold by this much, so dimmer parts of the
 // scene cross it and the whole field flares for a few frames.
 const SNARE_THRESHOLD_DROP = 0.09;
@@ -51,6 +56,20 @@ const wgsl = (code: string, includes: any[] = []) =>
 // Shader math, in plain WGSL. Each helper is a normal WGSL function; the second
 // argument to wgsl() lists the functions it calls so they get emitted too.
 // ---------------------------------------------------------------------------
+const fisheye = (textureNode: any, amount: any) => Fn(() => {
+	const uvNode = textureNode.uvNode || uv();
+	const aspect = screenSize.x.div(screenSize.y);
+	// Centred, y in [-1,1], x widened by aspect so the warp is circular, not elliptical.
+	const p = uvNode.sub(0.5).mul(2).mul(vec2(aspect, 1)).toVar();
+	const r = length(p).toVar();
+	const rCorner = length(vec2(aspect, 1));   // radius at the frame corners
+
+	const K = amount;
+	const rn = r.div(rCorner);                            // 0 at centre, 1 at the corners
+	const scale = rn.mul(rn).mul(K).add(1).div(1 + K);    // (1 + K·rn²) / (1 + K)
+
+	return textureNode.sample(p.mul(scale).div(vec2(aspect, 1)).mul(0.5).add(0.5));
+})();
 
 function randomQuaternion() {
     const u1 = Math.random();
@@ -468,6 +487,7 @@ const redTint = (input: any, amount: any) =>
 // UnrealBloomPass -> OutputPass in the reference. The pass resizes with the canvas.
 const scenePass = pass(scene, camera).getTextureNode();
 const postProcessing = new THREE.RenderPipeline(renderer);
+//const warped = fisheye(scenePass, 0.5);
 const bloomPass = bloom(scenePass, BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD);
 postProcessing.outputNode = redTint(scenePass.add(bloomPass), bassUniform.pow(1.0));
 
