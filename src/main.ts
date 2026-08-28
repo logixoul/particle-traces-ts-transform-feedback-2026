@@ -476,7 +476,12 @@ let destQuaternion = new THREE.Quaternion();
 let destQuaternionSmoothed = new THREE.Quaternion();
 let currentQuaternion = new THREE.Quaternion();
 audio.bass.hitCallback = () => {
-	destQuaternion = randomQuaternion();
+	//destQuaternion = randomQuaternion();
+	destQuaternion.multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(
+		(Math.random()-0.5) * .5 * Math.PI,
+		(Math.random()-0.5) * .5 * Math.PI,
+		0
+	)));
 };
 
 //const controls = new OrbitControls(camera, renderer.domElement);
