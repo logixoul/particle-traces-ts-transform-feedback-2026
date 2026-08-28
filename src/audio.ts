@@ -1,3 +1,5 @@
+import * as THREE from 'three/webgpu';
+
 /**
  * Crude kick/snare detection off a looping mp3.
  *
@@ -91,13 +93,13 @@ class Band {
 			// Half-life rather than a per-frame constant, so the decay looks the same
 			// whether the scene is running at 30fps or 144.
 			this.level *= Math.pow(0.5, dt / ENVELOPE_HALF_LIFE_MS);
-			this.levelFast *= Math.pow(0.5, dt / 1000);
+			this.levelFast *= Math.pow(0.5, dt / 800);
 		}
 		
 		// Updated after the test, so a hit does not get to raise the bar it just cleared.
 		this.average += (energy - this.average) * AVERAGE_SMOOTHING;
-		this.smoothedLevel += (this.level - this.smoothedLevel) * 0.2;
-		this.smoothedLevelFast += (this.levelFast - this.smoothedLevelFast) * 0.2;
+		this.smoothedLevel = THREE.MathUtils.lerp(this.level, this.smoothedLevel, Math.pow(0.5, dt / 20));
+		this.smoothedLevelFast = THREE.MathUtils.lerp(this.levelFast, this.smoothedLevelFast, Math.pow(0.5, dt / 20));
 	}
 }
 
@@ -109,7 +111,7 @@ export type AudioReactor = {
 	/** False until the browser lets the track start. */
 	readonly playing: boolean;
 	/** Call once per frame with performance.now(). */
-	update(now: number): void;
+	update(now: number): number;
 };
 
 /**
@@ -156,7 +158,7 @@ export function createAudioReactor(url: string): AudioReactor {
 		source.buffer = buffer;
 		source.loop = true;
 		source.connect(analyser).connect(context.destination);
-		source.start(0, 47.2);
+		source.start(0, 40);
 		
 		playing = true;
 	};
@@ -170,13 +172,14 @@ export function createAudioReactor(url: string): AudioReactor {
 		get bass() { return bass; },
 		get snare() { return snare; },
 		get playing() { return playing; },
-		update(now: number) {
+		update(now: number) : number {
 			const dt = lastUpdate < 0 ? 0 : now - lastUpdate;
 			lastUpdate = now;
-			if (!playing) return;
+			if (!playing) return 0;
 			analyser.getByteFrequencyData(spectrum);
 			bass.update(spectrum, now, dt);
 			snare.update(spectrum, now, dt);
+			return dt;
 		},
 	};
 }

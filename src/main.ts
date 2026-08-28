@@ -29,15 +29,13 @@ const AXIAL_MAX = 400;          // cap on the look-down-the-barrel emittance fla
 const TUBE_SIDES = 6;         // radial segments per tube; 4 x this many triangles per trail sample
 
 const EXPOSURE = 0.6;
-const BLOOM_STRENGTH = 0.6;
+const BLOOM_STRENGTH = 1.6;
 const BLOOM_RADIUS = 0.0003;
 const BLOOM_THRESHOLD = 0.1;
 
 // Audio reactivity. The mp3 sits in the project root, which the vite dev server serves
 // as-is; a production build would need it moved into public/ to get copied across.
 const MUSIC_URL = encodeURI("/public/music.mp3");
-// A full-strength kick multiplies the exposure by 1 + this.
-const BASS_EXPOSURE_BOOST = 1.4;
 // A full-strength snare drops the bloom threshold by this much, so dimmer parts of the
 // scene cross it and the whole field flares for a few frames.
 const SNARE_THRESHOLD_DROP = 0.09;
@@ -463,7 +461,7 @@ document.body.appendChild(renderer.domElement);
 
 const redTint = (input: any, amount: any) =>
 	//luminance(input.rgb).mul(mix(vec3(1, .5, 0), vec3(1, 0, 0), amount));
-	input.rgb.mul(mix(vec3(1, 1, 1), vec3(1, 0, 0), amount))
+	mix(input.rgb, input.r.mul(vec3(1, 0.0, 0)), amount)
 
 // Bloom over the HDR scene pass. RenderPipeline applies tone mapping and the sRGB
 // conversion to outputNode itself, so this is the same order as RenderPass ->
@@ -508,7 +506,7 @@ async function main() {
 
 	renderer.setAnimationLoop(() => {
 		frameUniform.value += 1;
-		bassUniform.value = audio.bass.level;
+		bassUniform.value = audio.bass.levelFast;
 		smoothedBassUniform.value = audio.bass.smoothedLevel;
 		trailSlotUniform.value = (trailSlotUniform.value + 1) % TAIL_LENGTH;
 		renderer.compute(computeUpdate);
@@ -516,13 +514,11 @@ async function main() {
 		renderer.compute(computeUpdate);
 
 		const now = performance.now();
-		audio.update(now);
-		// Both are driven every frame rather than only on a hit, so they slide back to
-		// their resting values with the envelope instead of snapping back.
+		const dt = audio.update(now);
 		
 		const zoom = 1.6 - 0.4 * audio.snare.smoothedLevel;
-		destQuaternionSmoothed.slerp(destQuaternion, 0.4);
-		currentQuaternion.slerp(destQuaternionSmoothed, 0.1);
+		destQuaternionSmoothed.slerp(destQuaternion, 1 - Math.pow(0.5, dt / 20));
+		currentQuaternion.slerp(destQuaternionSmoothed, 1 - Math.pow(0.5, dt / 80));
 		
 		camera.position.copy(
 			new THREE.Vector3(0, 0, zoom).applyQuaternion(currentQuaternion));
