@@ -23,7 +23,8 @@ import {
 	convertToTexture,
 	texture,
 	fwidth,
-	smoothstep
+	smoothstep,
+	step
 } from 'three/tsl';
 
 // ---------------------------------------------------------------------------
@@ -532,6 +533,10 @@ class MotionMemoryNode extends AfterImageNode {
 	}
 }
 const motionDecayUniform = uniform(0, 'float');
+const sketchUniform = uniform(0, 'float');
+const invertUniform = uniform(0, 'float');
+const grayscaleUniform = uniform(0, 'float');
+
 
 const bloomPass = bloom(scenePass, BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD);
 // The memory samples its input as a texture, and a sum of nodes is not one, so render it
@@ -553,7 +558,7 @@ const bgAspectUniform = uniform(1, 'float');
 const screenOverBg = screenSize.x.div(screenSize.y).div(bgAspectUniform);
 // screenUV's y runs down the screen and the texture's v runs up it, hence the flip.
 const bgUV = screenUV.sub(0.5).mul(vec2(screenOverBg.min(1), float(1).div(screenOverBg).min(1).negate())).add(0.5);
-const withBackground = remembered.rgb.add(vec3(1.0).sub(texture(bgTexture, bgUV).rgb));
+const withBackground = remembered.rgb.add(mix(vec3(1.0).sub(texture(bgTexture, bgUV).rgb),vec3(0.0), invertUniform.oneMinus()));
 
 const toneMapped = renderOutput(vec4(redTint(withBackground, bassUniform.pow(1.0)) as any, 1)).rgb;
 
@@ -590,9 +595,6 @@ const ink = HATCH_ANGLES.reduce((coverage: any, angle, i) => {
 // colour, so hue survives wherever there is hatching to carry it.
 const sketched = mix(vec3(1), bleached.mul(HATCH_INK_DARKEN), ink);
 
-const sketchUniform = uniform(0, 'float');
-const invertUniform = uniform(0, 'float');
-const grayscaleUniform = uniform(0, 'float');
 const effected = mix(toneMapped, sketched, sketchUniform);
 const grayscaled = mix(effected, vec3(luminance(effected)), grayscaleUniform);
 const grayscaledCont = smoothstep(vec3(0), vec3(0.4), grayscaled);
@@ -652,7 +654,7 @@ gui.add(audio.settings, 'reactivityDb', -50, 20, 0.1).name('Reactivity (dB)');
 // Each effect is on while its checkbox is ticked or its key is held. Shift+key toggles
 // the checkbox. Keys go by event.code, the physical key, so case and keyboard layout
 // do not matter.
-const effects = { sketch: false, invert: false, grayscale: false, motionBlur: true };
+const effects = { sketch: false, invert: false, grayscale: false, motionBlur: false };
 type Effect = keyof typeof effects;
 const held: Record<Effect, boolean> = { sketch: false, invert: false, grayscale: false, motionBlur: false };
 let motionBlurOn = effects.motionBlur;
