@@ -15,7 +15,11 @@ import {
 	screenSize,
 	vec2,
 	length,
-	tan
+	tan,
+	renderOutput,
+	blendOverlay,
+	screenUV,
+	fwidth
 } from 'three/tsl';
 
 // ---------------------------------------------------------------------------
@@ -42,6 +46,13 @@ const BLOOM_THRESHOLD = 0.1;
 // Audio reactivity. A full-strength snare drops the bloom threshold by this much, so dimmer parts of the
 // scene cross it and the whole field flares for a few frames.
 const SNARE_THRESHOLD_DROP = 0.09;
+
+// Sketch effect. Line spacing is relative to the window height, so the look does not
+// change with resolution or the Quality slider.
+const HATCH_LINES_PER_HEIGHT = 90;
+const HATCH_ANGLES = [Math.PI / 4, -Math.PI / 4, 0, Math.PI / 2]; // lightest tone first
+const HATCH_MAX_HALF_WIDTH = 0.3; // in line periods; 0.5 would close the gaps entirely
+const HATCH_INK_DARKEN = 0.6;
 
 /** JS number -> WGSL f32 literal (`1` is an integer literal in WGSL, `1.0` is not). */
 const f32 = (n: number) => (Number.isInteger(n) ? `${n}.0` : `${n}`);
@@ -487,7 +498,48 @@ const scenePass = pass(scene, camera).getTextureNode();
 const postProcessing = new THREE.RenderPipeline(renderer);
 //const warped = fisheye(scenePass, 0.5);
 const bloomPass = bloom(scenePass, BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD);
-postProcessing.outputNode = redTint(scenePass.add(bloomPass), bassUniform.pow(1.0));
+
+// Tone mapping and the sRGB conversion are applied here by hand rather than left to
+// RenderPipeline, so that the effects below get display-referred [0,1] colour to work
+// on -- hard light is only defined on that range.
+postProcessing.outputColorTransform = false;
+const toneMapped = renderOutput(vec4(redTint(scenePass.add(bloomPass), bassUniform.pow(1.0)) as any, 1)).rgb;
+
+/**
+ * One layer of parallel hatching lines at `angle`, `darkness` in [0,1] setting how
+ * thick they are. The lines are fixed in screen space, so they never flicker; fwidth()
+ * antialiases them at whatever resolution the Quality slider picked.
+ */
+const hatchLayer = (p: any, angle: number, darkness: any) => {
+	const across = dot(p, vec2(-Math.sin(angle), Math.cos(angle)));
+	// A slow wobble along the stroke, so the lines read as hand-drawn rather than ruled.
+	const along = dot(p, vec2(Math.cos(angle), Math.sin(angle)));
+	const t = across.add(along.mul(0.37).add(angle * 5).sin().mul(0.08));
+	const distance = t.fract().sub(0.5).abs();
+	const halfWidth = darkness.mul(HATCH_MAX_HALF_WIDTH);
+	const aa = fwidth(t);
+	return float(1).sub(distance.smoothstep(halfWidth.sub(aa), halfWidth.add(aa)));
+};
+
+// Sketch: bleach bypass, then crosshatching. Four layers, each fading in over its own
+// quarter of the tone range, so darker areas collect more directions of hatching and
+// the tone changes continuously rather than in steps.
+const bleached = blendOverlay(vec3(luminance(toneMapped)), toneMapped); // = hard light, gray on top
+const tone = luminance(bleached);
+const hatchSpace = screenUV.mul(vec2(screenSize.x.div(screenSize.y), 1)).mul(HATCH_LINES_PER_HEIGHT);
+const ink = HATCH_ANGLES.reduce((coverage: any, angle, i) => {
+	const threshold = 1 - i / HATCH_ANGLES.length;
+	const darkness = float(threshold).sub(tone).mul(HATCH_ANGLES.length).saturate();
+	return coverage.max(hatchLayer(hatchSpace, angle, darkness));
+}, float(0));
+// Coloured pencil on white paper: the strokes take a darkened version of the pixel's own
+// colour, so hue survives wherever there is hatching to carry it.
+const sketched = mix(vec3(1), bleached.mul(HATCH_INK_DARKEN), ink);
+
+const sketchUniform = uniform(0, 'float');
+const invertUniform = uniform(0, 'float');
+const effected = mix(toneMapped, sketched, sketchUniform);
+postProcessing.outputNode = vec4(mix(effected, effected.oneMinus(), invertUniform), 1);
 
 const audio = createAudioReactor();
 let destQuaternion = new THREE.Quaternion();
@@ -525,6 +577,9 @@ const qualityController = gui.add(quality, 'log2Scale', -2, 0, 0.01).onChange(()
 qualityController.name('Quality (1.00x)');
 gui.add(audio.settings, 'trackInput').name('Track input');
 gui.add(audio.settings, 'reactivityDb', -20, 20, 0.1).name('Reactivity (dB)');
+const effects = { sketch: false, invert: false };
+gui.add(effects, 'sketch').name('Sketch').onChange((on: boolean) => { sketchUniform.value = on ? 1 : 0; });
+gui.add(effects, 'invert').name('Invert output').onChange((on: boolean) => { invertUniform.value = on ? 1 : 0; });
 
 const info = document.getElementById('info')!;
 
