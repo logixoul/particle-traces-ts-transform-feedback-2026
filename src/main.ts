@@ -49,10 +49,19 @@ const SNARE_THRESHOLD_DROP = 0.09;
 
 // Sketch effect. Line spacing is relative to the window height, so the look does not
 // change with resolution or the Quality slider.
-const HATCH_LINES_PER_HEIGHT = 90;
+const HATCH_LINES_PER_HEIGHT = 180;
 const HATCH_ANGLES = [Math.PI / 4, -Math.PI / 4, 0, Math.PI / 2]; // lightest tone first
 const HATCH_MAX_HALF_WIDTH = 0.3; // in line periods; 0.5 would close the gaps entirely
 const HATCH_INK_DARKEN = 0.6;
+const HATCH_SOLID_BELOW = 0.05; // tone at which hatching fades into solid ink, reaching it at 0
+const SKETCH_BLOOM_RADIUS_SCALE = 5;
+
+// Mouse wheel / touchpad zoom, as a multiplier on the camera's distance.
+const ZOOM_MIN = 0.2;
+const ZOOM_MAX = 5;
+const ZOOM_SENSITIVITY = 0.001;      // log-distance per wheel pixel; a mouse notch is ~100px
+const ZOOM_PINCH_SENSITIVITY = 0.01; // pinch deltas are roughly 10x smaller
+const ZOOM_HALF_LIFE_MS = 80;
 
 /** JS number -> WGSL f32 literal (`1` is an integer literal in WGSL, `1.0` is not). */
 const f32 = (n: number) => (Number.isInteger(n) ? `${n}.0` : `${n}`);
@@ -531,7 +540,9 @@ const ink = HATCH_ANGLES.reduce((coverage: any, angle, i) => {
 	const threshold = 1 - i / HATCH_ANGLES.length;
 	const darkness = float(threshold).sub(tone).mul(HATCH_ANGLES.length).saturate();
 	return coverage.max(hatchLayer(hatchSpace, angle, darkness));
-}, float(0));
+}, float(0))
+	// The darkest tones close up into solid ink instead of staying a mesh of hatching.
+	.max(float(HATCH_SOLID_BELOW).sub(tone).div(HATCH_SOLID_BELOW).saturate());
 // Coloured pencil on white paper: the strokes take a darkened version of the pixel's own
 // colour, so hue survives wherever there is hatching to carry it.
 const sketched = mix(vec3(1), bleached.mul(HATCH_INK_DARKEN), ink);
@@ -567,6 +578,19 @@ window.addEventListener('resize', () => {
 // every pass (scene, bloom) shrinks with it. The canvas keeps its CSS size, and the
 // browser stretches it back up to the window with bilinear filtering. The slider runs
 // over log2 of the scale so each notch is the same ratio, not the same step.
+// Wheel zoom scales the camera's distance from the centre. It works on the log of the
+// distance, so each notch zooms by the same ratio however close in you are. Touchpad
+// two-finger scrolling arrives as wheel events too, and so does a touchpad pinch, with
+// ctrlKey set and much smaller deltas; preventDefault stops that pinch zooming the page.
+const userZoom = { log: 0, targetLog: 0 };
+renderer.domElement.addEventListener('wheel', (event) => {
+	event.preventDefault();
+	const pixels = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? event.deltaY * 33 : event.deltaY;
+	const sensitivity = event.ctrlKey ? ZOOM_PINCH_SENSITIVITY : ZOOM_SENSITIVITY;
+	userZoom.targetLog = THREE.MathUtils.clamp(userZoom.targetLog + pixels * sensitivity,
+		Math.log(ZOOM_MIN), Math.log(ZOOM_MAX));
+}, { passive: false });
+
 const quality = { log2Scale: 0 };
 const gui = new GUI();
 const qualityController = gui.add(quality, 'log2Scale', -2, 0, 0.01).onChange(() => {
@@ -578,7 +602,11 @@ qualityController.name('Quality (1.00x)');
 gui.add(audio.settings, 'trackInput').name('Track input');
 gui.add(audio.settings, 'reactivityDb', -20, 20, 0.1).name('Reactivity (dB)');
 const effects = { sketch: false, invert: false };
-gui.add(effects, 'sketch').name('Sketch').onChange((on: boolean) => { sketchUniform.value = on ? 1 : 0; });
+gui.add(effects, 'sketch').name('Sketch').onChange((on: boolean) => {
+	sketchUniform.value = on ? 1 : 0;
+	bloomPass.radius.value = BLOOM_RADIUS * (on ? SKETCH_BLOOM_RADIUS_SCALE : 1);
+	bloomPass.strength.value = BLOOM_STRENGTH * (on ? 2 : 1);
+});
 gui.add(effects, 'invert').name('Invert output').onChange((on: boolean) => { invertUniform.value = on ? 1 : 0; });
 
 const info = document.getElementById('info')!;
@@ -609,7 +637,9 @@ async function main() {
 		const now = performance.now();
 		const dt = audio.update(now);
 		
-		const zoom = 1.6 - 0.4 * audio.snare.smoothedLevel;
+		// Not audio's dt: that stays 0 until the microphone starts, and zoom should work before.
+		userZoom.log += (userZoom.targetLog - userZoom.log) * (1 - Math.pow(0.5, (now - last) / ZOOM_HALF_LIFE_MS));
+		const zoom = (1.6 - 0.4 * audio.snare.smoothedLevel) * Math.exp(userZoom.log);
 		destQuaternionSmoothed.slerp(destQuaternion, 1 - Math.pow(0.5, dt / 20));
 		currentQuaternion.slerp(destQuaternionSmoothed, 1 - Math.pow(0.5, dt / 80));
 		
