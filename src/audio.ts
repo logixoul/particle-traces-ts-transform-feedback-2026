@@ -167,7 +167,7 @@ export function createAudioReactor(): AudioReactor {
 	const binHz = context.sampleRate / FFT_SIZE;
 	const bass = new Band(BASS, binHz);
 	const snare = new Band(SNARE, binHz);
-	const settings: AudioSettings = { trackInput: true, reactivityDb: 0 };
+	const settings: AudioSettings = { trackInput: false, reactivityDb: 0 };
 
 	// Starts at the target, i.e. unity gain, and adapts from there.
 	let longTermDb = TARGET_LEVEL_DB;

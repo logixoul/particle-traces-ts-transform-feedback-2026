@@ -19,7 +19,8 @@ import {
 	renderOutput,
 	blendOverlay,
 	screenUV,
-	fwidth
+	fwidth,
+	smoothstep
 } from 'three/tsl';
 
 // ---------------------------------------------------------------------------
@@ -549,8 +550,13 @@ const sketched = mix(vec3(1), bleached.mul(HATCH_INK_DARKEN), ink);
 
 const sketchUniform = uniform(0, 'float');
 const invertUniform = uniform(0, 'float');
+const grayscaleUniform = uniform(0, 'float');
 const effected = mix(toneMapped, sketched, sketchUniform);
-postProcessing.outputNode = vec4(mix(effected, effected.oneMinus(), invertUniform), 1);
+const grayscaled = mix(effected, vec3(luminance(effected)), grayscaleUniform);
+const grayscaledCont = smoothstep(vec3(0), vec3(0.4), grayscaled);
+const inverted = mix(grayscaledCont, grayscaledCont.oneMinus(), invertUniform);
+const invertedRgb = mix(effected, effected.oneMinus(), invertUniform);
+postProcessing.outputNode = vec4(mix(inverted, invertedRgb, grayscaleUniform.oneMinus()), 1);
 
 const audio = createAudioReactor();
 let destQuaternion = new THREE.Quaternion();
@@ -601,13 +607,14 @@ const qualityController = gui.add(quality, 'log2Scale', -2, 0, 0.01).onChange(()
 qualityController.name('Quality (1.00x)');
 gui.add(audio.settings, 'trackInput').name('Track input');
 gui.add(audio.settings, 'reactivityDb', -20, 20, 0.1).name('Reactivity (dB)');
-const effects = { sketch: false, invert: false };
+const effects = { sketch: false, invert: false, grayscale: false };
 gui.add(effects, 'sketch').name('Sketch').onChange((on: boolean) => {
 	sketchUniform.value = on ? 1 : 0;
 	bloomPass.radius.value = BLOOM_RADIUS * (on ? SKETCH_BLOOM_RADIUS_SCALE : 1);
 	bloomPass.strength.value = BLOOM_STRENGTH * (on ? 2 : 1);
 });
 gui.add(effects, 'invert').name('Invert output').onChange((on: boolean) => { invertUniform.value = on ? 1 : 0; });
+gui.add(effects, 'grayscale').name('Black&white').onChange((on: boolean) => { grayscaleUniform.value = on ? 1 : 0; });
 
 const info = document.getElementById('info')!;
 
@@ -650,9 +657,13 @@ async function main() {
 		camera.updateProjectionMatrix();
 		//renderer.toneMappingExposure = EXPOSURE * (1 + BASS_EXPOSURE_BOOST * audio.bass.smoothedLevel);
 		bloomPass.threshold.value = Math.max(0, BLOOM_THRESHOLD - SNARE_THRESHOLD_DROP * audio.snare.smoothedLevel);
+		const onInvert = grayscaleUniform.value > 0 ? 1.5 : 1;
+		bloomPass.strength.value /= onInvert;
 
 		//controls.update();
 		postProcessing.render();
+
+		bloomPass.strength.value *= onInvert;
 
 		fps += (1000 / (now - last) - fps) * 0.05;
 		last = now;
