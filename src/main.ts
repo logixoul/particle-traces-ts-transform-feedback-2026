@@ -24,7 +24,8 @@ import {
 	texture,
 	fwidth,
 	smoothstep,
-	step
+	step,
+	select
 } from 'three/tsl';
 
 // ---------------------------------------------------------------------------
@@ -230,7 +231,18 @@ const doStep = (p: any) => {
 
 	p.addAssign(velocity);
 	// Colour by direction of travel
-	return hue2rgb({ h: atan(velocity.y, velocity.x).div(Math.PI).add(1).mul(0.5) }).add(.01);
+	const hue = atan(velocity.y, velocity.x).div(Math.PI).add(1).mul(0.5);
+	const hueCompressed = hue.mul(0.3).add(float(frameUniform).mul(0.001)).fract();
+	// frameUniform is a uint, so convert it first: uint * 0.1 would truncate 0.1 to 0.
+	// fract() wraps the distance around the colour wheel so the band keeps cycling.
+	//const hueDist = hue.sub(float(frameUniform).mul(0.001)).add(0.5).fract().sub(0.5).abs();
+	//const useHue = hueDist.mul(4.0).pow2().negate().exp();
+	//const huePulseSrc = float(frameUniform).mul(0.1).mod(10.0).mul(10.0);
+	//const huePulse = float(.95).pow(huePulseSrc).mul(huePulseSrc).div(huePulseSrc.add(1.0)); // mul by reinhard
+	//const huePulseExpPulse = float(.4).pow(huePulse).sub(float(.1).pow(huePulse)).mul(10.0);
+	//return mix(vec3(0.3), hue2rgb({ h: hue }).normalize(), 1.0);
+	const huePulse = bassUniform.pow3();
+	return huePulse.mul(hue2rgb({ h: hueCompressed }));
 };
 
 /**
@@ -468,6 +480,7 @@ const specular = pow(dot(normalize(surfaceNormal), halfway).max(0), 8);
 const fresnel = dot(halfway, viewDirection).max(0).oneMinus().pow(5)
 	.mul(1 - SPECULAR_F0).add(SPECULAR_F0);
 const specularStepped = specular.greaterThan(0.5).select(float(1), float(0)).mul(10).mul(fresnel);
+const specularStepped2 = emittance.equal(0.0).select(float(0), specularStepped);
 
 //const diffuse =
 
@@ -478,7 +491,7 @@ const material = new THREE.MeshBasicNodeMaterial({
 	//alphaTest: 0.001,
 });
 material.positionNode = center.add(offset.mul(radius));
-material.colorNode = emittance.mul(chord).mul(axial).add(specularStepped);
+material.colorNode = emittance.mul(chord).mul(axial).add(specularStepped2);
 material.opacityNode = trailFade;
 
 const particles = new THREE.Mesh(buildSegmentGeometry(), material);
@@ -550,7 +563,7 @@ const remembered = new MotionMemoryNode(bloomPassAdded, motionDecayUniform).getT
 postProcessing.outputColorTransform = false;
 // The background: the inverse of bg.jpg, added in after the motion memory so it does not
 // smear. Cover-fitted, i.e. scaled to fill the screen and cropped rather than stretched.
-const bgTexture = new THREE.TextureLoader().load('/bg.jpg', (t) => {
+const bgTexture = new THREE.TextureLoader().load('bg.jpg', (t) => {
 	bgAspectUniform.value = t.image.width / t.image.height;
 });
 bgTexture.colorSpace = THREE.SRGBColorSpace;
@@ -641,14 +654,15 @@ renderer.domElement.addEventListener('wheel', (event) => {
 		Math.log(ZOOM_MIN), Math.log(ZOOM_MAX));
 }, { passive: false });
 
-const quality = { log2Scale: 0 };
+const quality = { log2Scale: -1 };
 const gui = new GUI();
-const qualityController = gui.add(quality, 'log2Scale', -2, 0, 0.01).onChange(() => {
+const applyQuality = () => {
 	const scale = Math.pow(2, quality.log2Scale);
 	renderer.setPixelRatio(window.devicePixelRatio * scale);
 	qualityController.name(`Quality (${scale.toFixed(2)}x)`);
-});
-qualityController.name('Quality (1.00x)');
+};
+const qualityController = gui.add(quality, 'log2Scale', -2, 0, 0.01).onChange(applyQuality);
+applyQuality();
 gui.add(audio.settings, 'trackInput').name('Track input');
 gui.add(audio.settings, 'reactivityDb', -50, 20, 0.1).name('Reactivity (dB)');
 // Each effect is on while its checkbox is ticked or its key is held. Shift+key toggles
