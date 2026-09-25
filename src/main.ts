@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
+import GUI from 'lil-gui';
 import { createAudioReactor } from './audio';
 import {
 	Fn, If, Loop, float, uint, uniform, instancedArray, instanceIndex,
@@ -38,10 +39,7 @@ const BLOOM_STRENGTH = 1.6;
 const BLOOM_RADIUS = 0.0003;
 const BLOOM_THRESHOLD = 0.1;
 
-// Audio reactivity. The mp3 sits in the project root, which the vite dev server serves
-// as-is; a production build would need it moved into public/ to get copied across.
-const MUSIC_URL = encodeURI("/music.mp3");
-// A full-strength snare drops the bloom threshold by this much, so dimmer parts of the
+// Audio reactivity. A full-strength snare drops the bloom threshold by this much, so dimmer parts of the
 // scene cross it and the whole field flares for a few frames.
 const SNARE_THRESHOLD_DROP = 0.09;
 
@@ -491,7 +489,7 @@ const postProcessing = new THREE.RenderPipeline(renderer);
 const bloomPass = bloom(scenePass, BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD);
 postProcessing.outputNode = redTint(scenePass.add(bloomPass), bassUniform.pow(1.0));
 
-const audio = createAudioReactor(MUSIC_URL);
+const audio = createAudioReactor();
 let destQuaternion = new THREE.Quaternion();
 let destQuaternionSmoothed = new THREE.Quaternion();
 let currentQuaternion = new THREE.Quaternion();
@@ -512,6 +510,21 @@ window.addEventListener('resize', () => {
 	camera.updateProjectionMatrix();
 	renderer.setSize(window.innerWidth, window.innerHeight);
 });
+
+// Quality renders at a fraction of the real resolution by lowering the pixel ratio, so
+// every pass (scene, bloom) shrinks with it. The canvas keeps its CSS size, and the
+// browser stretches it back up to the window with bilinear filtering. The slider runs
+// over log2 of the scale so each notch is the same ratio, not the same step.
+const quality = { log2Scale: 0 };
+const gui = new GUI();
+const qualityController = gui.add(quality, 'log2Scale', -2, 0, 0.01).onChange(() => {
+	const scale = Math.pow(2, quality.log2Scale);
+	renderer.setPixelRatio(window.devicePixelRatio * scale);
+	qualityController.name(`Quality (${scale.toFixed(2)}x)`);
+});
+qualityController.name('Quality (1.00x)');
+gui.add(audio.settings, 'trackInput').name('Track input');
+gui.add(audio.settings, 'reactivityDb', -20, 20, 0.1).name('Reactivity (dB)');
 
 const info = document.getElementById('info')!;
 
@@ -560,7 +573,7 @@ async function main() {
 		last = now;
 		info.textContent = `${PARTICLE_COUNT.toLocaleString()} particles`
 			+ ` x ${TAIL_LENGTH} trail   ${fps.toFixed(0)} fps`
-			+ (audio.playing ? `` : `   [click to start the music]`);
+			+ (audio.playing ? `` : `   [click to start the microphone]`);
 	});
 }
 

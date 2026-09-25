@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 
 /**
- * Crude kick/snare detection off a looping mp3.
+ * Crude kick/snare detection off the microphone.
  *
  * The whole algorithm is: watch the energy in one narrow frequency band, and call it
  * a hit whenever that energy jumps a set distance above its own recent average. That
@@ -103,45 +103,81 @@ class Band {
 	}
 }
 
+// Input normalisation. The long-term level is an exponential average of the input's
+// RMS in dB with this time constant; five time constants is 99%, so it takes ~25s to
+// settle after the room gets louder or quieter, and a drop or a quiet bar barely moves it.
+const LEVEL_TIME_CONSTANT_MS = 5000;
+// The level the normaliser pulls the input towards. Roughly where a loud mastered track
+// sits, which is what the band margins above were tuned against.
+const TARGET_LEVEL_DB = -14;
+// Cap on the normaliser's boost, so a long silence does not end with the mic noise
+// floor amplified into a strobe.
+const MAX_BOOST_DB = 30;
+// Floor for the RMS reading, so digital silence gives a number rather than -Infinity.
+const SILENCE_DB = -100;
+
+const dbToGain = (db: number) => Math.pow(10, db / 20);
+
+export type AudioSettings = {
+	/** Normalise the input against its own slowly-tracked long-term level. */
+	trackInput: boolean;
+	/** Gain applied after normalisation, in dB. */
+	reactivityDb: number;
+};
+
 export type AudioReactor = {
 	/** Kick envelope, 1 on a hit and decaying to 0. */
 	readonly bass: Band;
 	/** Snare envelope, same shape. */
 	readonly snare: Band;
-	/** False until the browser lets the track start. */
+	/** False until the browser lets the microphone start. */
 	readonly playing: boolean;
+	/** Live-editable; read every frame. */
+	readonly settings: AudioSettings;
 	/** Call once per frame with performance.now(). */
 	update(now: number): number;
 };
 
 /**
- * Starts loading `url` immediately and plays it on a loop as soon as it is allowed to.
+ * Opens the microphone and analyses it as soon as it is allowed to.
  *
- * Browsers only permit audio to start from a user gesture, so this tries once on load
- * -- which succeeds if the page already has one, e.g. on a reload after a click -- and
- * otherwise arms a listener that starts the track on the first click or keypress.
- * Until then both envelopes stay at 0 and the scene renders exactly as it would
- * without any of this.
+ * Browsers only let an AudioContext run after a user gesture, so this tries once on
+ * load -- which succeeds if the page already has one, e.g. on a reload after a click --
+ * and otherwise arms a listener that starts on the first click or keypress. Until then
+ * both envelopes stay at 0 and the scene renders exactly as it would without any of this.
+ *
+ * The graph is mic -> gain -> analyser, with a second analyser tapping the mic before
+ * the gain to measure the raw level. The gain carries both the normalisation and the
+ * reactivity, so everything downstream sees the adjusted signal. Nothing is connected
+ * to the speakers, so there is no feedback loop.
  */
-export function createAudioReactor(url: string): AudioReactor {
+export function createAudioReactor(): AudioReactor {
 	const context = new AudioContext();
 	const analyser = context.createAnalyser();
 	analyser.fftSize = FFT_SIZE;
 	// The Band class keeps its own running average, so the analyser's smoothing would
 	// only blur the transients we are trying to catch.
 	analyser.smoothingTimeConstant = 0;
+	const levelAnalyser = context.createAnalyser();
+	levelAnalyser.fftSize = FFT_SIZE;
+	const gain = context.createGain();
 
 	const spectrum = new Uint8Array(analyser.frequencyBinCount);
+	const samples = new Float32Array(levelAnalyser.fftSize);
 	const binHz = context.sampleRate / FFT_SIZE;
 	const bass = new Band(BASS, binHz);
 	const snare = new Band(SNARE, binHz);
+	const settings: AudioSettings = { trackInput: true, reactivityDb: 0 };
 
-	// Decoding does not need a running context, so it overlaps the wait for a gesture
-	// and the track starts the instant the click lands.
-	const decoded = fetch(url)
-		.then((response) => response.arrayBuffer())
-		.then((bytes) => context.decodeAudioData(bytes));
-	decoded.catch((error) => console.error(`could not load ${url}:`, error));
+	// Starts at the target, i.e. unity gain, and adapts from there.
+	let longTermDb = TARGET_LEVEL_DB;
+
+	// The browser's own voice-call processing would fight the normaliser and gate the
+	// quiet parts of the music, so it is all switched off.
+	const stream = navigator.mediaDevices.getUserMedia({
+		audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+	});
+	stream.catch((error) => console.error('could not open the microphone:', error));
 
 	let playing = false;
 	let lastUpdate = -1;
@@ -151,15 +187,11 @@ export function createAudioReactor(url: string): AudioReactor {
 		await context.resume();
 		if (context.state !== 'running') return; // still blocked; wait for a gesture
 
-		const buffer = await decoded;
+		const source = context.createMediaStreamSource(await stream);
 		if (playing) return; // the gesture may have raced the attempt made on load
 
-		const source = context.createBufferSource();
-		source.buffer = buffer;
-		source.loop = true;
-		source.connect(analyser).connect(context.destination);
-		source.start(0, 40);
-		
+		source.connect(levelAnalyser);
+		source.connect(gain).connect(analyser);
 		playing = true;
 	};
 
@@ -172,10 +204,22 @@ export function createAudioReactor(url: string): AudioReactor {
 		get bass() { return bass; },
 		get snare() { return snare; },
 		get playing() { return playing; },
+		settings,
 		update(now: number) : number {
 			const dt = lastUpdate < 0 ? 0 : now - lastUpdate;
 			lastUpdate = now;
 			if (!playing) return 0;
+
+			levelAnalyser.getFloatTimeDomainData(samples);
+			let sumOfSquares = 0;
+			for (const sample of samples) sumOfSquares += sample * sample;
+			const levelDb = Math.max(SILENCE_DB, 10 * Math.log10(sumOfSquares / samples.length));
+			longTermDb += (levelDb - longTermDb) * (1 - Math.exp(-dt / LEVEL_TIME_CONSTANT_MS));
+
+			const normaliseDb = settings.trackInput
+				? Math.min(MAX_BOOST_DB, TARGET_LEVEL_DB - longTermDb) : 0;
+			gain.gain.value = dbToGain(normaliseDb + settings.reactivityDb);
+
 			analyser.getByteFrequencyData(spectrum);
 			bass.update(spectrum, now, dt);
 			snare.update(spectrum, now, dt);
