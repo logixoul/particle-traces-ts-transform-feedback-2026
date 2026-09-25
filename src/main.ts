@@ -607,14 +607,56 @@ const qualityController = gui.add(quality, 'log2Scale', -2, 0, 0.01).onChange(()
 qualityController.name('Quality (1.00x)');
 gui.add(audio.settings, 'trackInput').name('Track input');
 gui.add(audio.settings, 'reactivityDb', -20, 20, 0.1).name('Reactivity (dB)');
+// Each effect is on while its checkbox is ticked or its key is held. Shift+key toggles
+// the checkbox. Keys go by event.code, the physical key, so case and keyboard layout
+// do not matter.
 const effects = { sketch: false, invert: false, grayscale: false };
-gui.add(effects, 'sketch').name('Sketch').onChange((on: boolean) => {
-	sketchUniform.value = on ? 1 : 0;
-	bloomPass.radius.value = BLOOM_RADIUS * (on ? SKETCH_BLOOM_RADIUS_SCALE : 1);
-	bloomPass.strength.value = BLOOM_STRENGTH * (on ? 2 : 1);
+type Effect = keyof typeof effects;
+const held: Record<Effect, boolean> = { sketch: false, invert: false, grayscale: false };
+const applyEffect: Record<Effect, (on: boolean) => void> = {
+	sketch: (on) => {
+		sketchUniform.value = on ? 1 : 0;
+		bloomPass.radius.value = BLOOM_RADIUS * (on ? SKETCH_BLOOM_RADIUS_SCALE : 1);
+		bloomPass.strength.value = BLOOM_STRENGTH * (on ? 2 : 1);
+	},
+	invert: (on) => { invertUniform.value = on ? 1 : 0; },
+	grayscale: (on) => { grayscaleUniform.value = on ? 1 : 0; },
+};
+const updateEffect = (effect: Effect) => applyEffect[effect](effects[effect] || held[effect]);
+const effectControllers = {
+	sketch: gui.add(effects, 'sketch').name('Sketch [S]'),
+	invert: gui.add(effects, 'invert').name('Invert output [I]'),
+	grayscale: gui.add(effects, 'grayscale').name('Black&white [B]'),
+};
+for (const effect of Object.keys(effectControllers) as Effect[]) {
+	effectControllers[effect].onChange(() => updateEffect(effect));
+}
+
+const effectKeys: Record<string, Effect> = { KeyS: 'sketch', KeyI: 'invert', KeyB: 'grayscale' };
+window.addEventListener('keydown', (event) => {
+	const effect = effectKeys[event.code];
+	if (!effect || event.repeat || event.target instanceof HTMLInputElement) return;
+	if (event.shiftKey) {
+		effects[effect] = !effects[effect];
+		effectControllers[effect].updateDisplay();
+	} else {
+		held[effect] = true;
+	}
+	updateEffect(effect);
 });
-gui.add(effects, 'invert').name('Invert output').onChange((on: boolean) => { invertUniform.value = on ? 1 : 0; });
-gui.add(effects, 'grayscale').name('Black&white').onChange((on: boolean) => { grayscaleUniform.value = on ? 1 : 0; });
+window.addEventListener('keyup', (event) => {
+	const effect = effectKeys[event.code];
+	if (!effect) return;
+	held[effect] = false;
+	updateEffect(effect);
+});
+// A key released while the window is unfocused never sends keyup, so let go of them all.
+window.addEventListener('blur', () => {
+	for (const effect of Object.keys(held) as Effect[]) {
+		held[effect] = false;
+		updateEffect(effect);
+	}
+});
 
 const info = document.getElementById('info')!;
 
