@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
+import AfterImageNode from 'three/addons/tsl/display/AfterImageNode.js';
 import GUI from 'lil-gui';
 import { createAudioReactor } from './audio';
 import {
@@ -19,6 +20,7 @@ import {
 	renderOutput,
 	blendOverlay,
 	screenUV,
+	convertToTexture,
 	fwidth,
 	smoothstep
 } from 'three/tsl';
@@ -43,10 +45,12 @@ const EXPOSURE = 0.6;
 const BLOOM_STRENGTH = 1.6;
 const BLOOM_RADIUS = 0.0003;
 const BLOOM_THRESHOLD = 0.1;
+// Motion blur: how long a pixel takes to forget half of what it showed.
+const MOTION_HALF_LIFE_MS = 125;
 
 // Audio reactivity. A full-strength snare drops the bloom threshold by this much, so dimmer parts of the
 // scene cross it and the whole field flares for a few frames.
-const SNARE_THRESHOLD_DROP = 0.09;
+const SNARE_THRESHOLD_DROP = 0.0;//0.09;
 
 // Sketch effect. Line spacing is relative to the window height, so the look does not
 // change with resolution or the Quality slider.
@@ -507,13 +511,38 @@ const redTint = (input: any, amount: any) =>
 const scenePass = pass(scene, camera).getTextureNode();
 const postProcessing = new THREE.RenderPipeline(renderer);
 //const warped = fisheye(scenePass, 0.5);
+
+/**
+ * Exponential memory: every pixel is a running average of its own history, each frame
+ * pulling it `1 - decay` of the way towards the new image. This borrows AfterImageNode's
+ * ping-pong buffers and only swaps its blend, which is a max() with a hard cutoff rather
+ * than an average. The buffers take the input's texture type, and the scene pass is
+ * HalfFloat, so the memory is kept in HDR at fp16.
+ */
+class MotionMemoryNode extends AfterImageNode {
+	setup(builder: any) {
+		const self = this as any; // AfterImageNode's internals are private in the typings
+		const textureNodeOld = self._textureNodeOld;
+		textureNodeOld.uvNode = self.textureNode.uvNode || uv();
+		self._materialComposed ??= new THREE.NodeMaterial();
+		self._materialComposed.fragmentNode = mix(self.textureNode.sample(), textureNodeOld.sample(), self.damp);
+		builder.getNodeProperties(this).textureNode = self.textureNode;
+		return self._textureNode;
+	}
+}
+const motionDecayUniform = uniform(0, 'float');
+
 const bloomPass = bloom(scenePass, BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD);
+// The memory samples its input as a texture, and a sum of nodes is not one, so render it
+// into one first. convertToTexture's target is HalfFloat, keeping the memory at fp16.
+const bloomPassAdded = convertToTexture(bloomPass.add(scenePass));
+const remembered = new MotionMemoryNode(bloomPassAdded, motionDecayUniform).getTextureNode();
 
 // Tone mapping and the sRGB conversion are applied here by hand rather than left to
 // RenderPipeline, so that the effects below get display-referred [0,1] colour to work
 // on -- hard light is only defined on that range.
 postProcessing.outputColorTransform = false;
-const toneMapped = renderOutput(vec4(redTint(scenePass.add(bloomPass), bassUniform.pow(1.0)) as any, 1)).rgb;
+const toneMapped = renderOutput(vec4(redTint(remembered, bassUniform.pow(1.0)) as any, 1)).rgb;
 
 /**
  * One layer of parallel hatching lines at `angle`, `darkness` in [0,1] setting how
@@ -606,13 +635,14 @@ const qualityController = gui.add(quality, 'log2Scale', -2, 0, 0.01).onChange(()
 });
 qualityController.name('Quality (1.00x)');
 gui.add(audio.settings, 'trackInput').name('Track input');
-gui.add(audio.settings, 'reactivityDb', -20, 20, 0.1).name('Reactivity (dB)');
+gui.add(audio.settings, 'reactivityDb', -50, 20, 0.1).name('Reactivity (dB)');
 // Each effect is on while its checkbox is ticked or its key is held. Shift+key toggles
 // the checkbox. Keys go by event.code, the physical key, so case and keyboard layout
 // do not matter.
-const effects = { sketch: false, invert: false, grayscale: false };
+const effects = { sketch: false, invert: false, grayscale: false, motionBlur: true };
 type Effect = keyof typeof effects;
-const held: Record<Effect, boolean> = { sketch: false, invert: false, grayscale: false };
+const held: Record<Effect, boolean> = { sketch: false, invert: false, grayscale: false, motionBlur: false };
+let motionBlurOn = effects.motionBlur;
 const applyEffect: Record<Effect, (on: boolean) => void> = {
 	sketch: (on) => {
 		sketchUniform.value = on ? 1 : 0;
@@ -621,18 +651,20 @@ const applyEffect: Record<Effect, (on: boolean) => void> = {
 	},
 	invert: (on) => { invertUniform.value = on ? 1 : 0; },
 	grayscale: (on) => { grayscaleUniform.value = on ? 1 : 0; },
+	motionBlur: (on) => { motionBlurOn = on; }, // read by the render loop
 };
 const updateEffect = (effect: Effect) => applyEffect[effect](effects[effect] || held[effect]);
 const effectControllers = {
 	sketch: gui.add(effects, 'sketch').name('Sketch [S]'),
 	invert: gui.add(effects, 'invert').name('Invert output [I]'),
 	grayscale: gui.add(effects, 'grayscale').name('Black&white [B]'),
+	motionBlur: gui.add(effects, 'motionBlur').name('Motion blur [M]'),
 };
 for (const effect of Object.keys(effectControllers) as Effect[]) {
 	effectControllers[effect].onChange(() => updateEffect(effect));
 }
 
-const effectKeys: Record<string, Effect> = { KeyS: 'sketch', KeyI: 'invert', KeyB: 'grayscale' };
+const effectKeys: Record<string, Effect> = { KeyS: 'sketch', KeyI: 'invert', KeyB: 'grayscale', KeyM: 'motionBlur' };
 window.addEventListener('keydown', (event) => {
 	const effect = effectKeys[event.code];
 	if (!effect || event.repeat || event.target instanceof HTMLInputElement) return;
@@ -688,6 +720,8 @@ async function main() {
 		
 		// Not audio's dt: that stays 0 until the microphone starts, and zoom should work before.
 		userZoom.log += (userZoom.targetLog - userZoom.log) * (1 - Math.pow(0.5, (now - last) / ZOOM_HALF_LIFE_MS));
+		// A decay of 0 forgets everything each frame, i.e. motion blur off.
+		motionDecayUniform.value = motionBlurOn ? Math.pow(0.5, (now - last) / MOTION_HALF_LIFE_MS) : 0;
 		const zoom = (1.4 - 0.4 * audio.snare.smoothedLevel) * Math.exp(userZoom.log);
 		destQuaternionSmoothed.slerp(destQuaternion, 1 - Math.pow(0.5, dt / 20));
 		currentQuaternion.slerp(destQuaternionSmoothed, 1 - Math.pow(0.5, dt / 80));
