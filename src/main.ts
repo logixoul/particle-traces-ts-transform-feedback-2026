@@ -688,7 +688,7 @@ async function main() {
 		
 		// Not audio's dt: that stays 0 until the microphone starts, and zoom should work before.
 		userZoom.log += (userZoom.targetLog - userZoom.log) * (1 - Math.pow(0.5, (now - last) / ZOOM_HALF_LIFE_MS));
-		const zoom = (1.6 - 0.4 * audio.snare.smoothedLevel) * Math.exp(userZoom.log);
+		const zoom = (1.4 - 0.4 * audio.snare.smoothedLevel) * Math.exp(userZoom.log);
 		destQuaternionSmoothed.slerp(destQuaternion, 1 - Math.pow(0.5, dt / 20));
 		currentQuaternion.slerp(destQuaternionSmoothed, 1 - Math.pow(0.5, dt / 80));
 		
@@ -699,7 +699,7 @@ async function main() {
 		camera.updateProjectionMatrix();
 		//renderer.toneMappingExposure = EXPOSURE * (1 + BASS_EXPOSURE_BOOST * audio.bass.smoothedLevel);
 		bloomPass.threshold.value = Math.max(0, BLOOM_THRESHOLD - SNARE_THRESHOLD_DROP * audio.snare.smoothedLevel);
-		const onInvert = grayscaleUniform.value > 0 ? 1.5 : 1;
+		const onInvert = grayscaleUniform.value > 0 ? 3.0 : 1;
 		bloomPass.strength.value /= onInvert;
 
 		//controls.update();

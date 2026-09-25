@@ -38,7 +38,7 @@ const FFT_SIZE = 1024;
  * the time, so that band is much steadier and a backbeat stands out of it by less.
  */
 const BASS = { hz: [10, 1500], margin: 0.1, floor: -9999.0 };
-const SNARE = { hz: [1500, 5000], margin: 0.02, floor: -9999.0 };
+const SNARE = { hz: [500, 5000], margin: 0.02, floor: -9999.0 };
 
 // How fast the running average chases the signal. Low, so that the average represents
 // roughly the last few hundred ms of the band and a hit stands out against it.
