@@ -21,6 +21,7 @@ import {
 	blendOverlay,
 	screenUV,
 	convertToTexture,
+	texture,
 	fwidth,
 	smoothstep
 } from 'three/tsl';
@@ -542,7 +543,19 @@ const remembered = new MotionMemoryNode(bloomPassAdded, motionDecayUniform).getT
 // RenderPipeline, so that the effects below get display-referred [0,1] colour to work
 // on -- hard light is only defined on that range.
 postProcessing.outputColorTransform = false;
-const toneMapped = renderOutput(vec4(redTint(remembered, bassUniform.pow(1.0)) as any, 1)).rgb;
+// The background: the inverse of bg.jpg, added in after the motion memory so it does not
+// smear. Cover-fitted, i.e. scaled to fill the screen and cropped rather than stretched.
+const bgTexture = new THREE.TextureLoader().load('/bg.jpg', (t) => {
+	bgAspectUniform.value = t.image.width / t.image.height;
+});
+bgTexture.colorSpace = THREE.SRGBColorSpace;
+const bgAspectUniform = uniform(1, 'float');
+const screenOverBg = screenSize.x.div(screenSize.y).div(bgAspectUniform);
+// screenUV's y runs down the screen and the texture's v runs up it, hence the flip.
+const bgUV = screenUV.sub(0.5).mul(vec2(screenOverBg.min(1), float(1).div(screenOverBg).min(1).negate())).add(0.5);
+const withBackground = remembered.rgb.add(vec3(1.0).sub(texture(bgTexture, bgUV).rgb));
+
+const toneMapped = renderOutput(vec4(redTint(withBackground, bassUniform.pow(1.0)) as any, 1)).rgb;
 
 /**
  * One layer of parallel hatching lines at `angle`, `darkness` in [0,1] setting how
